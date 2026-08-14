@@ -6,6 +6,7 @@
 import os
 import sys
 import yaml
+import json
 from datetime import datetime
 import pandas as pd
 
@@ -13,6 +14,14 @@ sys.path.append(os.path.abspath("../../"))
 sys.path.append(os.path.abspath("./"))
 
 from src.fpl_api import FPLApiClient
+
+def sanitize_df_for_delta(pdf: pd.DataFrame) -> pd.DataFrame:
+    pdf_clean = pdf.copy()
+    for col in pdf_clean.columns:
+        pdf_clean[col] = pdf_clean[col].apply(
+            lambda val: json.dumps(val) if isinstance(val, (list, dict)) else val
+        )
+    return pdf_clean
 
 # COMMAND ----------
 # Load config
@@ -33,14 +42,15 @@ assert data is not None, "Failed to fetch bootstrap-static payload from FPL API"
 # Process teams dataframe
 teams_pdf = pd.DataFrame(data["teams"])
 teams_pdf["_ingested_at"] = ingested_at
+teams_pdf_clean = sanitize_df_for_delta(teams_pdf)
 
 # Convert to Spark DataFrame
-teams_df = spark.createDataFrame(teams_pdf)
+teams_df = spark.createDataFrame(teams_pdf_clean)
 
 # COMMAND ----------
 # Save to Delta Table
 target_table = f"{db_bronze}.teams_raw"
-teams_df.write.mode("overwrite").format("delta").saveAsTable(target_table)
+teams_df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
 print(f"✅ Successfully written {teams_df.count()} rows to Delta table: {target_table}")
 

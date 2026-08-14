@@ -5,11 +5,11 @@ fpl_team_id: null
 
 # Historical & Current Seasons to process
 seasons:
-  - "2022-23"
   - "2023-24"
   - "2024-25"
+  - "2025-26"
 
-current_season: "2024-25"
+current_season: "2025-26"
 
 # FPL API Endpoints
 fpl_api:
