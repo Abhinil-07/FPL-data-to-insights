@@ -1,13 +1,13 @@
 # Databricks notebook source
 # COMMAND ----------
 # 02_build_player_crosswalk.py
-# Phase 3: Build player crosswalk table to reconcile player identities across live & 3 historical seasons.
-# Uses durable FPL code, full name (first + second name), and position matching to prevent surname collision bugs (e.g. Cole Palmer vs. Alex Palmer).
+# Phase 3: Build player crosswalk table with strict priority deduplication per season per source player.
 
 import os
 import sys
 import yaml
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 # COMMAND ----------
 # Load config
@@ -44,14 +44,13 @@ hist_prep = hist_players.select(
     F.col("season"),
     F.trim(F.col("first_name")).alias("hist_first_name"),
     F.trim(F.col("second_name")).alias("hist_second_name"),
-    F.lower(F.concat(F.trim(F.col("first_name")), F.lit(" "), F.trim(F.col("second_name")))).alias("hist_norm_full_name"),
-    F.col("element_type").cast("int").alias("hist_position_id")
+    F.lower(F.concat(F.trim(F.col("first_name")), F.lit(" "), F.trim(F.col("second_name")))).alias("hist_norm_full_name")
 ).distinct()
 
 # COMMAND ----------
-# 3. Multi-Strategy Crosswalk Matching
+# 3. Crosswalk Matching Strategies
 
-# Strategy 1: Primary Match by durable FPL code (100% unique per player across all seasons!)
+# Strategy 1: Match by durable FPL code (100% unique per player!)
 code_matched = hist_prep.join(
     live_players.select("player_key", "norm_full_name"),
     hist_prep.hist_code == live_players.player_key,
@@ -63,10 +62,11 @@ code_matched = hist_prep.join(
     F.col("hist_player_id").alias("source_player_id"),
     F.col("hist_first_name").alias("first_name"),
     F.col("hist_second_name").alias("second_name"),
-    F.lit("matched_by_durable_code").alias("crosswalk_status")
+    F.lit("matched_by_durable_code").alias("crosswalk_status"),
+    F.lit(1).alias("priority")
 )
 
-# Strategy 2: Secondary Match by exact FULL NAME (first_name + second_name) to avoid surname collisions!
+# Strategy 2: Match by exact FULL NAME (first_name + second_name)
 full_name_matched = hist_prep.join(
     live_players.select("player_key", "norm_full_name"),
     hist_prep.hist_norm_full_name == live_players.norm_full_name,
@@ -78,7 +78,8 @@ full_name_matched = hist_prep.join(
     F.col("hist_player_id").alias("source_player_id"),
     F.col("hist_first_name").alias("first_name"),
     F.col("hist_second_name").alias("second_name"),
-    F.lit("matched_by_full_name").alias("crosswalk_status")
+    F.lit("matched_by_full_name").alias("crosswalk_status"),
+    F.lit(2).alias("priority")
 )
 
 # Live API Players Master Entries
@@ -89,19 +90,24 @@ live_entries = live_players.select(
     F.col("live_player_id").alias("source_player_id"),
     F.col("first_name"),
     F.col("second_name"),
-    F.lit("live_master").alias("crosswalk_status")
+    F.lit("live_master").alias("crosswalk_status"),
+    F.lit(0).alias("priority")
 )
 
 # COMMAND ----------
-# Union code_matched and full_name_matched (strictly excluding single web_name joins to prevent Alex vs Cole Palmer bugs)
-crosswalk_union = live_entries.unionByName(code_matched) \
-    .unionByName(full_name_matched) \
-    .distinct()
+# Union all crosswalk entries and deduplicate by highest matching priority
+raw_union = live_entries.unionByName(code_matched).unionByName(full_name_matched)
+
+windowSpec = Window.partitionBy("season", "source_player_id").orderBy("priority")
+
+crosswalk_dedup = raw_union.withColumn("row_num", F.row_number().over(windowSpec)) \
+    .filter(F.col("row_num") == 1) \
+    .drop("priority", "row_num")
 
 # COMMAND ----------
 # Save to fpl.silver.player_crosswalk
 target_table = f"{db_silver}.player_crosswalk"
-crosswalk_union.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
+crosswalk_dedup.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
-print(f"✅ Successfully constructed Player Crosswalk table: {target_table} ({crosswalk_union.count()} rows mapped cleanly!)")
-display(crosswalk_union.filter(F.lower(F.col("second_name")) == "palmer").select("player_key", "first_name", "second_name", "season", "crosswalk_status"))
+print(f"✅ Successfully constructed Player Crosswalk table: {target_table} ({crosswalk_dedup.count()} deduplicated rows mapped cleanly!)")
+display(crosswalk_dedup.filter(F.lower(F.col("second_name")) == "palmer").select("player_key", "first_name", "second_name", "season", "crosswalk_status"))
