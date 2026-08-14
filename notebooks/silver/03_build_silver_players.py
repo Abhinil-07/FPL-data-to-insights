@@ -34,7 +34,7 @@ players_cleaned = players_raw.join(
     F.trim(F.col("first_name")).alias("first_name"),
     F.trim(F.col("second_name")).alias("second_name"),
     F.trim(F.col("web_name")).alias("web_name"),
-    F.col("team_id"),
+    F.col("team").cast("int").alias("team_id"),
     F.col("team_name"),
     F.col("short_name").alias("team_short_name"),
     F.col("element_type").cast("int").alias("position_id"),
@@ -71,4 +71,4 @@ target_table = f"{db_silver}.players"
 players_cleaned.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
 print(f"✅ Successfully written Silver players dimension table: {target_table} ({players_cleaned.count()} rows)")
-display(players_cleaned.select("player_key", "web_name", "team_short_name", "position_name", "price_gbp", "total_points", "form", "ownership_percent").limit(15))
+display(players_cleaned.select("player_key", "web_name", "team_name", "team_short_name", "position_name", "price_gbp", "total_points").limit(15))

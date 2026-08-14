@@ -26,6 +26,7 @@ crosswalk = spark.read.table(f"{db_silver}.player_crosswalk")
 # Extract column list to handle dynamic xG/xA column names safely
 col_list = archive_gws.columns
 
+element_col = F.col("element") if "element" in col_list else F.col("element_id") if "element_id" in col_list else F.col("id")
 xg_expr = F.col("xG") if "xG" in col_list else F.col("expected_goals") if "expected_goals" in col_list else F.lit(0.0)
 xa_expr = F.col("xA") if "xA" in col_list else F.col("expected_assists") if "expected_assists" in col_list else F.lit(0.0)
 ict_expr = F.col("ict_index") if "ict_index" in col_list else F.lit(0.0)
@@ -34,7 +35,7 @@ was_home_expr = F.col("was_home") if "was_home" in col_list else F.lit(None)
 # COMMAND ----------
 # Standardize historical gameweeks
 gws_clean = archive_gws.select(
-    F.col("element").cast("int").alias("source_player_id"),
+    element_col.cast("int").alias("source_player_id"),
     F.col("season"),
     F.col("GW").cast("int").alias("gameweek"),
     F.trim(F.col("name")).alias("raw_player_name"),
