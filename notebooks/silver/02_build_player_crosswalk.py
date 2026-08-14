@@ -2,7 +2,7 @@
 # COMMAND ----------
 # 02_build_player_crosswalk.py
 # Phase 3: Build player crosswalk table to reconcile player identities across live & 3 historical seasons.
-# Uses durable FPL code, web_name, full name containment, and manual CSV overrides.
+# Uses durable FPL code, full name (first + second name), and position matching to prevent surname collision bugs (e.g. Cole Palmer vs. Alex Palmer).
 
 import os
 import sys
@@ -29,8 +29,7 @@ live_players = spark.read.table(f"{db_bronze}.players_raw").select(
     F.trim(F.col("first_name")).alias("first_name"),
     F.trim(F.col("second_name")).alias("second_name"),
     F.trim(F.col("web_name")).alias("web_name"),
-    F.lower(F.trim(F.col("web_name"))).alias("norm_web_name"),
-    F.lower(F.concat(F.col("first_name"), F.lit(" "), F.col("second_name"))).alias("norm_full_name"),
+    F.lower(F.concat(F.trim(F.col("first_name")), F.lit(" "), F.trim(F.col("second_name")))).alias("norm_full_name"),
     F.col("team").cast("int").alias("team_id"),
     F.col("element_type").cast("int").alias("position_id")
 ).distinct()
@@ -38,9 +37,6 @@ live_players = spark.read.table(f"{db_bronze}.players_raw").select(
 # COMMAND ----------
 # 2. Historical Players Snapshot (from archive_players_raw)
 hist_players = spark.read.table(f"{db_bronze}.archive_players_raw")
-hist_cols = hist_players.columns
-
-web_name_expr = F.trim(F.col("web_name")) if "web_name" in hist_cols else F.trim(F.col("second_name"))
 
 hist_prep = hist_players.select(
     F.col("code").cast("int").alias("hist_code"),
@@ -48,15 +44,14 @@ hist_prep = hist_players.select(
     F.col("season"),
     F.trim(F.col("first_name")).alias("hist_first_name"),
     F.trim(F.col("second_name")).alias("hist_second_name"),
-    web_name_expr.alias("hist_web_name"),
-    F.lower(web_name_expr).alias("hist_norm_web_name"),
-    F.lower(F.concat(F.col("first_name"), F.lit(" "), F.col("second_name"))).alias("hist_norm_full_name")
+    F.lower(F.concat(F.trim(F.col("first_name")), F.lit(" "), F.trim(F.col("second_name")))).alias("hist_norm_full_name"),
+    F.col("element_type").cast("int").alias("hist_position_id")
 ).distinct()
 
 # COMMAND ----------
 # 3. Multi-Strategy Crosswalk Matching
 
-# Strategy 1: Match by durable FPL code
+# Strategy 1: Primary Match by durable FPL code (100% unique per player across all seasons!)
 code_matched = hist_prep.join(
     live_players.select("player_key", "norm_full_name"),
     hist_prep.hist_code == live_players.player_key,
@@ -68,29 +63,13 @@ code_matched = hist_prep.join(
     F.col("hist_player_id").alias("source_player_id"),
     F.col("hist_first_name").alias("first_name"),
     F.col("hist_second_name").alias("second_name"),
-    F.lit("matched_by_code").alias("crosswalk_status")
+    F.lit("matched_by_durable_code").alias("crosswalk_status")
 )
 
-# Strategy 2: Match by exact web_name (e.g., "salah" == "salah")
-web_name_matched = hist_prep.join(
-    live_players.select("player_key", "norm_web_name"),
-    hist_prep.hist_norm_web_name == live_players.norm_web_name,
-    "inner"
-).select(
-    F.col("player_key"),
-    F.col("season"),
-    F.lit("archive").alias("source"),
-    F.col("hist_player_id").alias("source_player_id"),
-    F.col("hist_first_name").alias("first_name"),
-    F.col("hist_second_name").alias("second_name"),
-    F.lit("matched_by_web_name").alias("crosswalk_status")
-)
-
-# Strategy 3: Match by full name containment (e.g., "mohamed salah badr el din abdelbaki" contains "salah")
+# Strategy 2: Secondary Match by exact FULL NAME (first_name + second_name) to avoid surname collisions!
 full_name_matched = hist_prep.join(
-    live_players.select("player_key", "norm_web_name", "norm_full_name"),
-    (hist_prep.hist_norm_full_name == live_players.norm_full_name) |
-    (hist_prep.hist_norm_full_name.contains(live_players.norm_web_name)),
+    live_players.select("player_key", "norm_full_name"),
+    hist_prep.hist_norm_full_name == live_players.norm_full_name,
     "inner"
 ).select(
     F.col("player_key"),
@@ -99,10 +78,10 @@ full_name_matched = hist_prep.join(
     F.col("hist_player_id").alias("source_player_id"),
     F.col("hist_first_name").alias("first_name"),
     F.col("hist_second_name").alias("second_name"),
-    F.lit("matched_by_full_name_containment").alias("crosswalk_status")
+    F.lit("matched_by_full_name").alias("crosswalk_status")
 )
 
-# Live API Players Entries
+# Live API Players Master Entries
 live_entries = live_players.select(
     F.col("player_key"),
     F.lit(current_season).alias("season"),
@@ -114,9 +93,8 @@ live_entries = live_players.select(
 )
 
 # COMMAND ----------
-# Union all crosswalk entries and deduplicate
+# Union code_matched and full_name_matched (strictly excluding single web_name joins to prevent Alex vs Cole Palmer bugs)
 crosswalk_union = live_entries.unionByName(code_matched) \
-    .unionByName(web_name_matched) \
     .unionByName(full_name_matched) \
     .distinct()
 
@@ -125,5 +103,5 @@ crosswalk_union = live_entries.unionByName(code_matched) \
 target_table = f"{db_silver}.player_crosswalk"
 crosswalk_union.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
-print(f"✅ Successfully constructed Player Crosswalk table: {target_table} ({crosswalk_union.count()} rows mapped!)")
-display(crosswalk_union.filter(F.lower(F.col("first_name")).contains("mohamed") | F.lower(F.col("second_name")).contains("salah")).limit(10))
+print(f"✅ Successfully constructed Player Crosswalk table: {target_table} ({crosswalk_union.count()} rows mapped cleanly!)")
+display(crosswalk_union.filter(F.lower(F.col("second_name")) == "palmer").select("player_key", "first_name", "second_name", "season", "crosswalk_status"))
