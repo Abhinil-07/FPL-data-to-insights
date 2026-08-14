@@ -34,3 +34,9 @@ databases:
 # Delta Storage Base Paths (for local or DBFS storage)
 storage:
   base_path: "/tmp/fpl_delta" # Adjust to dbfs:/user/hive/warehouse or DBFS path on Databricks
+
+# Databricks SQL Warehouse Connection (for Streamlit app)
+databricks_connection:
+  server_hostname: "dbc-4db848ba-6cbe.cloud.databricks.com"
+  http_path: ""  # Paste from SQL Warehouses -> Connection Details
+  access_token: "" # Paste from Settings -> Developer -> Access Tokens

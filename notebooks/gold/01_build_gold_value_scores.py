@@ -1,8 +1,8 @@
 # Databricks notebook source
 # COMMAND ----------
 # 01_build_gold_value_scores.py
-# Phase 4: Build fpl.gold.value_scores with position-normalized composite Z-scores.
-# Includes minimum minutes reliability filter to eliminate small-sample-size bias.
+# Phase 4: Build fpl.gold.value_scores with 2-Tier Strategy (Set & Forget Anchors vs Rolling Transfer Targets).
+# Position-aware anchor thresholds: DEF >= £5.5m, GKP >= £5.0m, MID/FWD >= £9.0m or High Ownership.
 
 import os
 import sys
@@ -25,7 +25,7 @@ players = spark.read.table(f"{db_silver}.players")
 fixtures = spark.read.table(f"{db_silver}.fixtures")
 
 # COMMAND ----------
-# Calculate upcoming 3-gameweek Fixture Difficulty Ease per team
+# Calculate upcoming 5-gameweek Fixture Difficulty Ease per team
 upcoming_fixtures = fixtures.filter(F.col("finished") == False) \
     .select(
         F.col("home_team_id").alias("team_id"),
@@ -39,13 +39,13 @@ upcoming_fixtures = fixtures.filter(F.col("finished") == False) \
     )
 
 fixture_ease = upcoming_fixtures.withColumn("row_num", F.row_number().over(Window.partitionBy("team_id").orderBy("team_id"))) \
-    .filter(F.col("row_num") <= 3) \
+    .filter(F.col("row_num") <= 5) \
     .groupBy("team_id") \
     .agg(F.avg("fdr").alias("avg_upcoming_fdr")) \
     .withColumn("fixture_ease_score", F.lit(5.0) - F.col("avg_upcoming_fdr"))
 
 # COMMAND ----------
-# Join players with fixture ease & Filter for Minimum Reliability (minutes > 0 or established players)
+# Join players with fixture ease & filter active players (minutes > 0)
 players_with_ease = players.filter(F.col("minutes") > 0) \
     .join(fixture_ease, "team_id", "left") \
     .na.fill({"fixture_ease_score": 2.5, "avg_upcoming_fdr": 2.5})
@@ -65,10 +65,25 @@ z_df = players_with_ease \
     .withColumn("min_std", F.stddev("minutes").over(window_pos)) \
     .withColumn("minutes_reliability_z", F.when(F.col("min_std") > 0, (F.col("minutes") - F.col("min_mean")) / F.col("min_std")).otherwise(0.0))
 
-# Composite Value Score = (0.5 * form_z) + (0.35 * fixture_ease_z) + (0.15 * minutes_reliability_z)
+# Composite Value Score & Position-Aware Strategy Classification
+# DEF Anchors: price >= 5.5m or ownership >= 15%
+# GKP Anchors: price >= 5.0m or ownership >= 15%
+# MID/FWD Anchors: price >= 9.0m or ownership >= 25%
 value_scores = z_df.withColumn(
     "value_score",
     F.round((F.lit(0.5) * F.col("form_z")) + (F.lit(0.35) * F.col("fixture_ease_z")) + (F.lit(0.15) * F.col("minutes_reliability_z")), 2)
+).withColumn(
+    "strategy_tier",
+    F.when(
+        (F.col("position_name") == "DEF") & ((F.col("price_gbp") >= 5.5) | (F.col("ownership_percent") >= 15.0)),
+        "🛡️ Season Anchor (Set & Forget)"
+    ).when(
+        (F.col("position_name") == "GKP") & ((F.col("price_gbp") >= 5.0) | (F.col("ownership_percent") >= 15.0)),
+        "🛡️ Season Anchor (Set & Forget)"
+    ).when(
+        (F.col("position_name").isin("MID", "FWD")) & ((F.col("price_gbp") >= 9.0) | (F.col("ownership_percent") >= 25.0)),
+        "🛡️ Season Anchor (Set & Forget)"
+    ).otherwise("🔄 Rolling Transfer Target")
 ).select(
     "player_key",
     "player_id",
@@ -85,6 +100,7 @@ value_scores = z_df.withColumn(
     "minutes",
     "minutes_reliability_z",
     "value_score",
+    "strategy_tier",
     F.current_timestamp().alias("_updated_at")
 )
 
@@ -93,5 +109,5 @@ value_scores = z_df.withColumn(
 target_table = f"{db_gold}.value_scores"
 value_scores.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
-print(f"✅ Successfully created Gold Value Scores table: {target_table} ({value_scores.count()} rows)")
-display(value_scores.filter(F.col("position_name") == "MID").orderBy(F.col("value_score").desc()).limit(10))
+print(f"✅ Successfully created Gold Value Scores table with Position-Aware Strategy: {target_table} ({value_scores.count()} rows)")
+display(value_scores.filter(F.col("position_name") == "DEF").orderBy(F.col("value_score").desc()).limit(10))

@@ -1,12 +1,41 @@
+# Python & Bytecode
 __pycache__/
 *.py[cod]
 *$py.class
-.pytest_cache/
+*.so
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Data & Exports
+data/
+*.csv
+*.parquet
+/tmp/fpl_delta/
+
+# Spark & Metastore
 .spark-warehouse/
 derby.log
 metastore_db/
-*.log
-.env
+
+# Streamlit & IDE
+.streamlit/
 .idea/
 .vscode/
+*.swp
+
+# Testing & Logs
+.pytest_cache/
+*.log
+
+# Environment & Secrets
+.env
+config/secrets.yaml
+
+# System & Scratch
+.DS_Store
+Thumbs.db
 scratch/
