@@ -1,7 +1,8 @@
 # Databricks notebook source
 # COMMAND ----------
 # 10_build_gold_captaincy_fit.py
-# Phase 4: Build fpl.gold.captaincy_fit for weekly captaincy selection (blending haul ceiling, FDR, and venue split).
+# Phase 4: Build fpl.gold.captaincy_fit for weekly captaincy selection.
+# Includes minimum 2 matches / 180 minutes filter to exclude 0-minute fringe players.
 
 import os
 import sys
@@ -25,23 +26,24 @@ player_gw_history = spark.read.table(f"{db_silver}.player_gw_history")
 value_scores = spark.read.table(f"{db_gold}.value_scores")
 
 # COMMAND ----------
-# Compute Haul Ceiling (Frequency of 10+ point hauls and max haul)
+# Compute Haul Ceiling (Frequency of 10+ point hauls and max haul) with minimum 2 matches requirement
 haul_stats = player_gw_history.filter(F.col("minutes") > 0) \
     .groupBy("player_key") \
     .agg(
         F.count("gameweek").alias("matches_played"),
+        F.sum("minutes").alias("total_minutes"),
         F.max("points").alias("max_single_match_haul"),
         F.sum(F.when(F.col("points") >= 10, 1).otherwise(0)).alias("hauls_10plus_count"),
         F.round(F.stddev("points"), 2).alias("points_volatility")
-    ).withColumn(
+    ).filter((F.col("matches_played") >= 2) & (F.col("total_minutes") >= 180)) \
+    .withColumn(
         "haul_frequency_percent",
         F.round(100.0 * F.col("hauls_10plus_count") / F.col("matches_played"), 1)
     )
 
 # COMMAND ----------
-# Join Value Scores with Haul Ceiling stats to produce Captaincy Fit Score
-captaincy_base = value_scores.join(haul_stats, "player_key", "left") \
-    .na.fill({"hauls_10plus_count": 0, "haul_frequency_percent": 0.0, "max_single_match_haul": 0, "points_volatility": 0.0})
+# Join Value Scores with Haul Ceiling stats for established active players only
+captaincy_base = value_scores.join(haul_stats, "player_key", "inner")
 
 # Compute Position-Normalized Captaincy Fit Score
 window_pos = Window.partitionBy("position_name")

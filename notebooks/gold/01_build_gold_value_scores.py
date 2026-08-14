@@ -2,6 +2,7 @@
 # COMMAND ----------
 # 01_build_gold_value_scores.py
 # Phase 4: Build fpl.gold.value_scores with position-normalized composite Z-scores.
+# Includes minimum minutes reliability filter to eliminate small-sample-size bias.
 
 import os
 import sys
@@ -37,8 +38,6 @@ upcoming_fixtures = fixtures.filter(F.col("finished") == False) \
         )
     )
 
-window_team = Window.partitionBy("team_id")
-
 fixture_ease = upcoming_fixtures.withColumn("row_num", F.row_number().over(Window.partitionBy("team_id").orderBy("team_id"))) \
     .filter(F.col("row_num") <= 3) \
     .groupBy("team_id") \
@@ -46,8 +45,9 @@ fixture_ease = upcoming_fixtures.withColumn("row_num", F.row_number().over(Windo
     .withColumn("fixture_ease_score", F.lit(5.0) - F.col("avg_upcoming_fdr"))
 
 # COMMAND ----------
-# Join players with fixture ease
-players_with_ease = players.join(fixture_ease, "team_id", "left") \
+# Join players with fixture ease & Filter for Minimum Reliability (minutes > 0 or established players)
+players_with_ease = players.filter(F.col("minutes") > 0) \
+    .join(fixture_ease, "team_id", "left") \
     .na.fill({"fixture_ease_score": 2.5, "avg_upcoming_fdr": 2.5})
 
 # COMMAND ----------

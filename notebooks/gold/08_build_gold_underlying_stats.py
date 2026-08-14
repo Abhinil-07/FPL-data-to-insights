@@ -2,6 +2,7 @@
 # COMMAND ----------
 # 08_build_gold_underlying_stats.py
 # Phase 4: Build fpl.gold.underlying_stats to flag players 'due a return' (actual goals < expected xG).
+# Includes minimum 180 minutes played filter to eliminate noisy small sample sizes.
 
 import os
 import sys
@@ -23,15 +24,17 @@ players = spark.read.table(f"{db_silver}.players")
 player_gw_history = spark.read.table(f"{db_silver}.player_gw_history")
 
 # COMMAND ----------
-# Aggregate 3-year trailing xG vs Actual Goals
+# Aggregate 3-year trailing xG vs Actual Goals (Minimum 180 minutes threshold)
 underlying_agg = player_gw_history.filter(F.col("minutes") > 0) \
     .groupBy("player_key") \
     .agg(
+        F.sum("minutes").alias("total_minutes"),
         F.sum("goals_scored").alias("total_goals"),
         F.round(F.sum("xg"), 2).alias("total_xg"),
         F.round(F.sum("xa"), 2).alias("total_xa"),
         F.round(F.sum("ict_index"), 2).alias("total_ict")
-    ).withColumn(
+    ).filter(F.col("total_minutes") >= 180) \
+    .withColumn(
         "xg_delta",
         F.round(F.col("total_xg") - F.col("total_goals"), 2)
     ).withColumn(
@@ -43,8 +46,7 @@ underlying_agg = player_gw_history.filter(F.col("minutes") > 0) \
 
 # Join with player dimension
 underlying_stats_enriched = players.select("player_key", "web_name", "team_name", "position_name", "price_gbp", "total_points") \
-    .join(underlying_agg, "player_key", "left") \
-    .na.fill({"total_goals": 0, "total_xg": 0.0, "total_xa": 0.0, "xg_delta": 0.0, "due_a_return_flag": "Expected Output ⚖️"}) \
+    .join(underlying_agg, "player_key", "inner") \
     .select(
         "player_key",
         "web_name",
