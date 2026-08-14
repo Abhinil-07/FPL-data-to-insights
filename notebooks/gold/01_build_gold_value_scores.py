@@ -48,7 +48,7 @@ fixture_ease = upcoming_fixtures.withColumn("row_num", F.row_number().over(Windo
 # COMMAND ----------
 # Join players with fixture ease
 players_with_ease = players.join(fixture_ease, "team_id", "left") \
-    .na.fill({"fixture_ease_score": 2.5})
+    .na.fill({"fixture_ease_score": 2.5, "avg_upcoming_fdr": 2.5})
 
 # COMMAND ----------
 # Compute Position-Normalized Z-Scores per Position Group (GKP, DEF, MID, FWD)
@@ -68,7 +68,7 @@ z_df = players_with_ease \
 # Composite Value Score = (0.5 * form_z) + (0.35 * fixture_ease_z) + (0.15 * minutes_reliability_z)
 value_scores = z_df.withColumn(
     "value_score",
-    ROUND((F.lit(0.5) * F.col("form_z")) + (F.lit(0.35) * F.col("fixture_ease_z")) + (F.lit(0.15) * F.col("minutes_reliability_z")), 2)
+    F.round((F.lit(0.5) * F.col("form_z")) + (F.lit(0.35) * F.col("fixture_ease_z")) + (F.lit(0.15) * F.col("minutes_reliability_z")), 2)
 ).select(
     "player_key",
     "player_id",
