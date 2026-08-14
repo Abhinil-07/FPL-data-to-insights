@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.spark-warehouse/
+derby.log
+metastore_db/
+*.log
+.env
+.idea/
+.vscode/
+scratch/
