@@ -2,6 +2,7 @@
 # COMMAND ----------
 # 04_build_gold_team_trends.py
 # Phase 4: Build fpl.gold.team_trends for rolling 6-game team attacking & defensive form.
+# Automatically falls back to most recent historical season match logs when current season matches = 0 (Pre-Season).
 
 import os
 import sys
@@ -22,28 +23,55 @@ db_gold = config["databases"]["gold"]
 # Read Silver tables
 fixtures = spark.read.table(f"{db_silver}.fixtures")
 teams = spark.read.table(f"{db_silver}.teams")
+player_gw_history = spark.read.table(f"{db_silver}.player_gw_history")
 
 # COMMAND ----------
-# Extract finished team match outcomes
-home_games = fixtures.filter(F.col("finished") == True) \
-    .select(
-        F.col("home_team_id").alias("team_id"),
-        F.col("gameweek"),
-        F.col("home_score").alias("goals_scored"),
-        F.col("away_score").alias("goals_conceded"),
-        F.when(F.col("away_score") == 0, 1).otherwise(0).alias("clean_sheet")
-    )
+# Check if current season has finished fixtures
+finished_fixtures_count = fixtures.filter(F.col("finished") == True).count()
 
-away_games = fixtures.filter(F.col("finished") == True) \
-    .select(
-        F.col("away_team_id").alias("team_id"),
-        F.col("gameweek"),
-        F.col("away_score").alias("goals_scored"),
-        F.col("home_score").alias("goals_conceded"),
-        F.when(F.col("home_score") == 0, 1).otherwise(0).alias("clean_sheet")
-    )
+if finished_fixtures_count > 0:
+    print("Using live current season finished fixtures for team trends...")
+    home_games = fixtures.filter(F.col("finished") == True) \
+        .select(
+            F.col("home_team_id").alias("team_id"),
+            F.col("gameweek"),
+            F.col("home_score").alias("goals_scored"),
+            F.col("away_score").alias("goals_conceded"),
+            F.when(F.col("away_score") == 0, 1).otherwise(0).alias("clean_sheet")
+        )
 
-all_team_games = home_games.unionByName(away_games)
+    away_games = fixtures.filter(F.col("finished") == True) \
+        .select(
+            F.col("away_team_id").alias("team_id"),
+            F.col("gameweek"),
+            F.col("away_score").alias("goals_scored"),
+            F.col("home_score").alias("goals_conceded"),
+            F.when(F.col("home_score") == 0, 1).otherwise(0).alias("clean_sheet")
+        )
+
+    all_team_games = home_games.unionByName(away_games)
+else:
+    print("Pre-Season detected (0 current season finished fixtures). Computing team trends from most recent historical season match logs...")
+    # Derive team match outcomes from player_gw_history for the most recent completed historical season
+    latest_season = player_gw_history.agg(F.max("season")).collect()[0][0]
+    print(f"Using completed season: {latest_season}")
+
+    hist_games = player_gw_history.filter((F.col("season") == latest_season) & (F.col("minutes") > 0)) \
+        .join(teams.select("team_id"), player_gw_history.opponent_team_id == teams.team_id, "inner") \
+        .groupBy("opponent_team_id", "gameweek") \
+        .agg(
+            F.max("goals_conceded").alias("goals_scored"), # Goals conceded by opponent = Goals scored by team
+            F.max("goals_scored").alias("goals_conceded"),
+            F.when(F.max("goals_scored") == 0, 1).otherwise(0).alias("clean_sheet")
+        ).select(
+            F.col("opponent_team_id").alias("team_id"),
+            F.col("gameweek"),
+            F.col("goals_scored"),
+            F.col("goals_conceded"),
+            F.col("clean_sheet")
+        )
+
+    all_team_games = hist_games
 
 # COMMAND ----------
 # Compute rolling 6-game window stats per team
