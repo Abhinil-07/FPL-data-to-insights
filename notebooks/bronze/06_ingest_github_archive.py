@@ -30,7 +30,7 @@ with open(config_path, "r") as f:
     config = yaml.safe_load(f)
 
 db_bronze = config["databases"]["bronze"]
-seasons_to_pull = config.get("seasons", ["2022-23", "2023-24", "2024-25"])
+seasons_to_pull = config.get("seasons", ["2023-24", "2024-25", "2025-26"])
 
 downloader = GitHubArchiveDownloader()
 ingested_at = datetime.utcnow()
@@ -63,7 +63,14 @@ if all_gw_dfs:
     target_table_gw = f"{db_bronze}.archive_player_gws"
     spark_gw_df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table_gw)
     print(f"✅ Successfully written {spark_gw_df.count()} total historical GW rows to Unity Catalog table: {target_table_gw}")
-    display(spark_gw_df.select("name", "season", "GW", "total_points", "minutes", "goals_scored", "assists", "xG", "xA", "ict_index", "_ingested_at").limit(15))
+    
+    # Select available preview columns dynamically to avoid hardcoded column missing errors
+    available_cols = spark_gw_df.columns
+    preview_cols = [c for c in ["name", "season", "GW", "total_points", "minutes", "goals_scored", "assists", "expected_goals", "expected_assists", "_ingested_at"] if c in available_cols]
+    if not preview_cols:
+        preview_cols = available_cols[:8]
+        
+    display(spark_gw_df.select(*preview_cols).limit(15))
 
 # COMMAND ----------
 # 2. Ingest Seasonal Player Snapshots (`players_raw.csv` across configured seasons)
@@ -88,6 +95,12 @@ if all_player_dfs:
     target_table_players = f"{db_bronze}.archive_players_raw"
     spark_players_df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table_players)
     print(f"✅ Successfully written {spark_players_df.count()} total historical player snapshot rows to Unity Catalog table: {target_table_players}")
-    display(spark_players_df.select("first_name", "second_name", "season", "id", "code", "total_points", "_ingested_at").limit(15))
+    
+    available_pcols = spark_players_df.columns
+    p_preview_cols = [c for c in ["first_name", "second_name", "season", "id", "code", "total_points", "_ingested_at"] if c in available_pcols]
+    if not p_preview_cols:
+        p_preview_cols = available_pcols[:6]
+        
+    display(spark_players_df.select(*p_preview_cols).limit(15))
 
 print("🎉 Phase 2 Historical Archive Ingestion complete!")
