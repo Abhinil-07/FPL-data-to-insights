@@ -1,52 +1,56 @@
 # Databricks notebook source
 # COMMAND ----------
 # run_full_pipeline.py
-# Master End-to-End Orchestrator for FPL Decision-Support Medallion Pipeline
-# Executes Bronze (Ingestion) -> Silver (Crosswalk & Cleaning) -> Gold (Analytics & 2-Tier Strategy) in one click.
+# Master End-to-End Orchestrator for FPL Decision-Support Medallion Pipeline.
+# Uses Databricks %run magic commands to execute in-process on active compute cluster.
 
-import time
-
-start_time = time.time()
 print("🚀 Starting End-to-End FPL Medallion Pipeline Execution (Bronze -> Silver -> Gold)...")
 
 # COMMAND ----------
 # STEP 1: BRONZE LAYER INGESTION
 print("\n--- 📥 Step 1/3: Ingesting Bronze Raw Data (FPL API + GitHub Archive) ---")
-dbutils.notebook.run("bronze/00_init_schemas", 0)
-print("  ✓ Schemas Initialized")
 
-dbutils.notebook.run("bronze/01_ingest_players_raw", 0)
-print("  ✓ Players Raw Ingested")
+# COMMAND ----------
+# MAGIC %run ./bronze/00_init_schemas
 
-dbutils.notebook.run("bronze/02_ingest_teams_raw", 0)
-print("  ✓ Teams Raw Ingested")
+# COMMAND ----------
+# MAGIC %run ./bronze/01_ingest_players_raw
 
-dbutils.notebook.run("bronze/03_ingest_events_raw", 0)
-print("  ✓ Events Raw Ingested")
+# COMMAND ----------
+# MAGIC %run ./bronze/02_ingest_teams_raw
 
-dbutils.notebook.run("bronze/04_ingest_fixtures_raw", 0)
-print("  ✓ Fixtures Raw Ingested")
+# COMMAND ----------
+# MAGIC %run ./bronze/03_ingest_events_raw
 
-dbutils.notebook.run("bronze/05_ingest_my_team_raw", 0)
-print("  ✓ Personal Squad Raw Processed")
+# COMMAND ----------
+# MAGIC %run ./bronze/04_ingest_fixtures_raw
 
-dbutils.notebook.run("bronze/06_ingest_github_archive", 0)
-print("  ✓ Historical GitHub Archive (3 Seasons) Ingested")
+# COMMAND ----------
+# MAGIC %run ./bronze/05_ingest_my_team_raw
+
+# COMMAND ----------
+# MAGIC %run ./bronze/06_ingest_github_archive
+
+# COMMAND ----------
 print("✅ Bronze Layer Execution Complete!")
 
 # COMMAND ----------
 # STEP 2: SILVER LAYER CLEANING & CROSSWALK RECONCILIATION
 print("\n--- 🧹 Step 2/3: Building Silver Tables & Crosswalk Reconciliation ---")
-dbutils.notebook.run("silver/run_all_silver", 0)
+
+# COMMAND ----------
+# MAGIC %run ./silver/run_all_silver
+
+# COMMAND ----------
 print("✅ Silver Layer Execution Complete!")
 
 # COMMAND ----------
 # STEP 3: GOLD LAYER ANALYTICS & 2-TIER STRATEGY
 print("\n--- 🏆 Step 3/3: Building Gold Analytics Tables & 2-Tier Strategy ---")
-dbutils.notebook.run("gold/run_all_gold", 0)
-print("✅ Gold Layer Execution Complete!")
 
 # COMMAND ----------
-elapsed = time.time() - start_time
-print(f"\n🎉 ENTIRE FPL PIPELINE EXECUTED SUCCESSFULLY IN {elapsed:.2f} SECONDS!")
+# MAGIC %run ./gold/run_all_gold
+
+# COMMAND ----------
+print("🎉 ENTIRE FPL PIPELINE EXECUTED SUCCESSFULLY!")
 print("Your live Databricks database (fpl.gold.*) and Streamlit Dashboard are fully refreshed!")
