@@ -1,7 +1,7 @@
 # Databricks notebook source
 # COMMAND ----------
 # 02_ingest_teams_raw.py
-# Ingest ONLY `fpl_bronze.teams_raw` from bootstrap-static/
+# Ingest ONLY `fpl.bronze.teams_raw` from bootstrap-static/
 
 import os
 import sys
@@ -48,11 +48,11 @@ teams_pdf_clean = sanitize_df_for_delta(teams_pdf)
 teams_df = spark.createDataFrame(teams_pdf_clean)
 
 # COMMAND ----------
-# Save to Delta Table
+# Save to Unity Catalog Delta Table (`fpl.bronze.teams_raw`)
 target_table = f"{db_bronze}.teams_raw"
 teams_df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
-print(f"✅ Successfully written {teams_df.count()} rows to Delta table: {target_table}")
+print(f"✅ Successfully written {teams_df.count()} rows to Unity Catalog table: {target_table}")
 
 # COMMAND ----------
 # Display sample preview

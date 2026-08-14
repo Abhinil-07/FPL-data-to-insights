@@ -27,9 +27,9 @@ github_archive:
 
 # Databricks Database / Catalog Naming
 databases:
-  bronze: "fpl_bronze"
-  silver: "fpl_silver"
-  gold: "fpl_gold"
+  bronze: "fpl.bronze"
+  silver: "fpl.silver"
+  gold: "fpl.gold"
 
 # Delta Storage Base Paths (for local or DBFS storage)
 storage:

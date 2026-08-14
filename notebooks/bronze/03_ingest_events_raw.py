@@ -1,7 +1,7 @@
 # Databricks notebook source
 # COMMAND ----------
 # 03_ingest_events_raw.py
-# Ingest ONLY `fpl_bronze.events_raw` (Gameweek metadata) from bootstrap-static/
+# Ingest ONLY `fpl.bronze.events_raw` (Gameweek metadata) from bootstrap-static/
 
 import os
 import sys
@@ -48,11 +48,11 @@ events_pdf_clean = sanitize_df_for_delta(events_pdf)
 events_df = spark.createDataFrame(events_pdf_clean)
 
 # COMMAND ----------
-# Save to Delta Table
+# Save to Unity Catalog Delta Table (`fpl.bronze.events_raw`)
 target_table = f"{db_bronze}.events_raw"
 events_df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
-print(f"✅ Successfully written {events_df.count()} rows to Delta table: {target_table}")
+print(f"✅ Successfully written {events_df.count()} rows to Unity Catalog table: {target_table}")
 
 # COMMAND ----------
 # Display sample preview

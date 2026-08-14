@@ -1,7 +1,7 @@
 # Databricks notebook source
 # COMMAND ----------
 # 04_ingest_fixtures_raw.py
-# Ingest ONLY `fpl_bronze.fixtures_raw` from fixtures/ endpoint
+# Ingest ONLY `fpl.bronze.fixtures_raw` from fixtures/ endpoint
 
 import os
 import sys
@@ -48,11 +48,11 @@ fixtures_pdf_clean = sanitize_df_for_delta(fixtures_pdf)
 fixtures_df = spark.createDataFrame(fixtures_pdf_clean)
 
 # COMMAND ----------
-# Save to Delta Table
+# Save to Unity Catalog Delta Table (`fpl.bronze.fixtures_raw`)
 target_table = f"{db_bronze}.fixtures_raw"
 fixtures_df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
-print(f"✅ Successfully written {fixtures_df.count()} rows to Delta table: {target_table}")
+print(f"✅ Successfully written {fixtures_df.count()} rows to Unity Catalog table: {target_table}")
 
 # COMMAND ----------
 # Display sample preview
