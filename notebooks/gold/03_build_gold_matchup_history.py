@@ -32,12 +32,19 @@ teams_classified = teams.withColumn(
     "opponent_category",
     F.when(F.col("short_name").isin(top_6_shorts), "Top 6")
      .otherwise("Rest of League")
+).select(
+    F.col("team_id").alias("opp_team_id"),
+    "opponent_category"
 )
 
 # COMMAND ----------
 # Aggregate matchup performance against opponent categories
 matchup_history = player_gw_history.filter(F.col("minutes") > 0) \
-    .join(teams_classified.select(F.col("team_id").alias("opp_id"), "opponent_category", "short_name"), player_gw_history.opponent_team_id == teams_classified.team_id, "left") \
+    .join(
+        teams_classified,
+        player_gw_history.opponent_team_id == teams_classified.opp_team_id,
+        "left"
+    ) \
     .groupBy("player_key", "opponent_category") \
     .agg(
         F.count("gameweek").alias("matches_played"),
