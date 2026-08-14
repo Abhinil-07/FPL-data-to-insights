@@ -1,0 +1,36 @@
+# FPL Decision-Support Dashboard Configuration
+
+# FPL User Team ID (set to null if not created yet; pipeline handles this gracefully)
+fpl_team_id: null
+
+# Historical & Current Seasons to process
+seasons:
+  - "2022-23"
+  - "2023-24"
+  - "2024-25"
+
+current_season: "2024-25"
+
+# FPL API Endpoints
+fpl_api:
+  base_url: "https://fantasy.premierleague.com/api"
+  endpoints:
+    bootstrap_static: "/bootstrap-static/"
+    fixtures: "/fixtures/"
+    element_summary: "/element-summary/{player_id}/"
+    entry: "/entry/{team_id}/"
+    entry_history: "/entry/{team_id}/history/"
+
+# GitHub Historical Archive (vaastav/Fantasy-Premier-League)
+github_archive:
+  repo_raw_url: "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
+
+# Databricks Database / Catalog Naming
+databases:
+  bronze: "fpl_bronze"
+  silver: "fpl_silver"
+  gold: "fpl_gold"
+
+# Delta Storage Base Paths (for local or DBFS storage)
+storage:
+  base_path: "/tmp/fpl_delta" # Adjust to dbfs:/user/hive/warehouse or DBFS path on Databricks
