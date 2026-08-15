@@ -1,7 +1,8 @@
 # Databricks notebook source
 # COMMAND ----------
 # 05_build_gold_fixture_planner.py
-# Phase 4: Build fpl.gold.fixture_planner with wide upcoming N-gameweek FDR difficulty matrix per team.
+# Phase 4: Build fpl.gold.fixture_planner with Mid-Season (19-Gameweek) FDR Matrix per Team.
+# Generates wide next_gw_1 through next_gw_19 text columns and numeric fdr_gw_1 through fdr_gw_19 for Power BI.
 
 import os
 import sys
@@ -24,7 +25,7 @@ fixtures = spark.read.table(f"{db_silver}.fixtures")
 teams = spark.read.table(f"{db_silver}.teams")
 
 # COMMAND ----------
-# Unpivot fixtures into team perspective (Home and Away)
+# Unpivot fixtures into team perspective (Home and Away) for all upcoming fixtures
 home_f = fixtures.filter(F.col("finished") == False) \
     .select(
         F.col("home_team_id").alias("team_id"),
@@ -46,51 +47,57 @@ away_f = fixtures.filter(F.col("finished") == False) \
 all_upcoming = home_f.unionByName(away_f)
 
 # COMMAND ----------
-# Format fixture display e.g. "ARS (H) - 2" (Opponent, Venue, FDR)
+# Format fixture display e.g. "ARS (H) FDR:2"
 formatted_fixtures = all_upcoming.withColumn(
     "fixture_desc",
     F.concat(F.col("opponent_short"), F.lit(" ("), F.col("venue"), F.lit(") FDR:"), F.col("fdr"))
 )
 
-# Window to take next 5 upcoming gameweeks
+# Window to order upcoming gameweeks per team up to 19 (Mid-Season)
 window_team_gw = Window.partitionBy("team_id").orderBy("gameweek")
 
-next_5_fixtures = formatted_fixtures.withColumn("gw_order", F.row_number().over(window_team_gw)) \
-    .filter(F.col("gw_order") <= 5)
+next_19_fixtures = formatted_fixtures.withColumn("gw_order", F.row_number().over(window_team_gw)) \
+    .filter(F.col("gw_order") <= 19)
 
-# Pivot wide by gw_order (gw_1, gw_2, gw_3, gw_4, gw_5)
-pivoted_planner = next_5_fixtures.groupBy("team_id") \
-    .pivot("gw_order", [1, 2, 3, 4, 5]) \
-    .agg(
-        F.first("fixture_desc").alias("desc"),
-        F.first("fdr").alias("fdr_val")
-    )
+# Pivot wide by gw_order (1 through 19)
+pivot_list = list(range(1, 20))
 
-# Calculate 5-GW average FDR
-avg_fdr = next_5_fixtures.groupBy("team_id") \
-    .agg(F.round(F.avg("fdr"), 2).alias("avg_5gw_fdr"))
+pivoted_desc = next_19_fixtures.groupBy("team_id") \
+    .pivot("gw_order", pivot_list) \
+    .agg(F.first("fixture_desc"))
 
-# Join with teams
+pivoted_fdr = next_19_fixtures.groupBy("team_id") \
+    .pivot("gw_order", pivot_list) \
+    .agg(F.first("fdr"))
+
+# Calculate 5-GW and 19-GW average FDR
+avg_5gw = next_19_fixtures.filter(F.col("gw_order") <= 5).groupBy("team_id").agg(F.round(F.avg("fdr"), 2).alias("avg_5gw_fdr"))
+avg_19gw = next_19_fixtures.groupBy("team_id").agg(F.round(F.avg("fdr"), 2).alias("avg_midseason_fdr"))
+
+# Build Dynamic Select Expressions
+select_exprs = ["team_id", "team_name", "short_name", "avg_5gw_fdr", "avg_midseason_fdr"]
+
+# Add text columns next_gw_1 .. next_gw_19
+desc_renamed = pivoted_desc
+for i in range(1, 20):
+    desc_renamed = desc_renamed.withColumnRenamed(str(i), f"next_gw_{i}")
+
+fdr_renamed = pivoted_fdr
+for i in range(1, 20):
+    fdr_renamed = fdr_renamed.withColumnRenamed(str(i), f"fdr_gw_{i}")
+
+# Join all components
 fixture_planner = teams.select("team_id", "team_name", "short_name") \
-    .join(avg_fdr, "team_id", "left") \
-    .join(pivoted_planner, "team_id", "left") \
-    .select(
-        "team_id",
-        "team_name",
-        "short_name",
-        "avg_5gw_fdr",
-        F.col("1_desc").alias("next_gw_1"),
-        F.col("2_desc").alias("next_gw_2"),
-        F.col("3_desc").alias("next_gw_3"),
-        F.col("4_desc").alias("next_gw_4"),
-        F.col("5_desc").alias("next_gw_5"),
-        F.current_timestamp().alias("_updated_at")
-    )
+    .join(avg_5gw, "team_id", "left") \
+    .join(avg_19gw, "team_id", "left") \
+    .join(desc_renamed, "team_id", "left") \
+    .join(fdr_renamed, "team_id", "left") \
+    .withColumn("_updated_at", F.current_timestamp())
 
 # COMMAND ----------
 # Save to fpl.gold.fixture_planner
 target_table = f"{db_gold}.fixture_planner"
 fixture_planner.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
-print(f"✅ Successfully created Gold Fixture Planner table: {target_table} ({fixture_planner.count()} rows)")
+print(f"✅ Successfully updated Gold Fixture Planner table with 19 Mid-Season Gameweeks: {target_table} ({fixture_planner.count()} rows)")
 display(fixture_planner.orderBy(F.col("avg_5gw_fdr").asc()))
