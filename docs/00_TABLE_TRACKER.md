@@ -4,7 +4,7 @@
 
 | Medallion Layer | Database Schema | Table Count | Storage Engine | Purpose |
 |---|---|---|---|---|
-| 📥 **Bronze Layer** | `fpl.bronze` | 7 Tables | Delta Lake | Raw landing zone for official FPL API & 3-year historical archive. |
+| 📥 **Bronze Layer** | `fpl.bronze` | 7 Tables | Delta Lake | Raw landing zone for official FPL API (80+ raw fields) & 3-year historical archive. |
 | 🧹 **Silver Layer** | `fpl.silver` | 5 Tables | Delta Lake | Cleansed, normalized dimensions, facts, and identity crosswalk. |
 | 🏆 **Gold Layer** | `fpl.gold` | 10 Tables | Delta Lake | Business-level analytical tables & 2-tier decision-support models. |
 
@@ -12,40 +12,110 @@
 
 ## 2. 📥 Bronze Layer Tables (`fpl.bronze.*`)
 
-### Table 1: `fpl.bronze.players_raw`
-*Live player master payload from official FPL API (`bootstrap-static/ elements`).*
-- `id` (INT, PK): Current season live player ID.
-- `web_name` (STRING): Shirt display name.
+### Table 1: `fpl.bronze.players_raw` (Complete 80+ Raw API Fields)
+*Raw player master payload landed directly from official FPL API (`bootstrap-static/ elements`). Preserves 100% raw fidelity.*
+
+#### 🆔 Identifiers & Bio Metadata
+- `id` (BIGINT, PK): Current season live player ID.
+- `code` (BIGINT): Durable FPL player code (unique across all seasons).
 - `first_name` (STRING): First name.
 - `second_name` (STRING): Last name.
-- `element_type` (INT): Position code (`1`=GKP, `2`=DEF, `3`=MID, `4`=FWD).
-- `team` (INT, FK): Team ID.
-- `now_cost` (INT): Price in tenths of a million (e.g. `155` = £15.5m).
-- `selected_by_percent` (STRING): Ownership %.
-- `form` (STRING): Recent form score.
-- `minutes` (INT): Cumulative current season minutes.
-- `goals_scored` (INT): Cumulative current season goals.
-- `assists` (INT): Cumulative current season assists.
-- `clean_sheets` (INT): Cumulative clean sheets.
-- `goals_conceded` (INT): Cumulative goals conceded.
-- `_ingested_at` (TIMESTAMP): Ingestion timestamp.
+- `web_name` (STRING): Display shirt name (e.g. `"Haaland"`).
+- `element_type` (BIGINT): Position code (`1`=GKP, `2`=DEF, `3`=MID, `4`=FWD).
+- `team` (BIGINT, FK): Team ID (1 to 20).
+- `team_code` (BIGINT): Durable team code.
+- `squad_number` (BIGINT): Shirt number.
+- `photo` (STRING): Player headshot filename.
+
+#### 💷 Price, Transfers & Ownership Metrics
+- `now_cost` (BIGINT): Price in tenths of a million (e.g. `155` = £15.5m).
+- `now_cost_rank` (BIGINT): Overall price rank.
+- `now_cost_rank_type` (BIGINT): Price rank within position group.
+- `cost_change_event` (BIGINT): Price change in current gameweek.
+- `cost_change_event_fall` (BIGINT): Price drop in current gameweek.
+- `cost_change_start` (BIGINT): Price change since start of season.
+- `cost_change_start_fall` (BIGINT): Price drop since start of season.
+- `selected_by_percent` (STRING): Ownership % (e.g. `"73.5"`).
+- `selected_rank` (BIGINT): Overall ownership rank.
+- `selected_rank_type` (BIGINT): Ownership rank within position group.
+- `transfers_in` (BIGINT): Cumulative transfers in.
+- `transfers_in_event` (BIGINT): Transfers in during current gameweek.
+- `transfers_out` (BIGINT): Cumulative transfers out.
+- `transfers_out_event` (BIGINT): Transfers out during current gameweek.
+
+#### ⚽ Cumulative Season Match Performance
+- `event_points` (BIGINT): Points scored in current gameweek.
+- `total_points` (BIGINT): Cumulative total points scored.
+- `points_per_game` (STRING): Average points per game.
+- `form` (STRING): Current form rating over recent gameweeks.
+- `minutes` (BIGINT): Cumulative minutes played.
+- `goals_scored` (BIGINT): Goals scored.
+- `assists` (BIGINT): Assists.
+- `clean_sheets` (BIGINT): Clean sheets.
+- `goals_conceded` (BIGINT): Goals conceded.
+- `own_goals` (BIGINT): Own goals.
+- `penalties_saved` (BIGINT): Penalty saves.
+- `penalties_missed` (BIGINT): Penalty misses.
+- `yellow_cards` (BIGINT): Yellow cards.
+- `red_cards` (BIGINT): Red cards.
+- `saves` (BIGINT): Goalkeeper saves.
+- `bonus` (BIGINT): Cumulative bonus points.
+- `bps` (BIGINT): Bonus Points System raw score.
+
+#### 📈 Underlying FPL Indices
+- `influence` (STRING): Influence rating.
+- `influence_rank` (BIGINT): Influence overall rank.
+- `influence_rank_type` (BIGINT): Influence rank in position.
+- `creativity` (STRING): Creativity rating.
+- `creativity_rank` (BIGINT): Creativity overall rank.
+- `creativity_rank_type` (BIGINT): Creativity rank in position.
+- `threat` (STRING): Threat rating.
+- `threat_rank` (BIGINT): Threat overall rank.
+- `threat_rank_type` (BIGINT): Threat rank in position.
+- `ict_index` (STRING): Composite ICT index.
+- `ict_index_rank` (BIGINT): ICT overall rank.
+- `ict_index_rank_type` (BIGINT): ICT rank in position.
+- `ep_next` (STRING): Expected points for next round.
+- `ep_this` (VOID/STRING): Expected points for current round.
+
+#### 🩺 Player Availability & News Flags
+- `status` (STRING): Availability status (`"a"`=Available, `"d"`=Doubtful, `"i"`=Injured, `"u"`=Unavailable).
+- `chance_of_playing_next_round` (DOUBLE): Chance % of playing next round (e.g. `100.0`, `75.0`, `0.0`).
+- `chance_of_playing_this_round` (VOID/DOUBLE): Chance % of playing current round.
+- `news` (STRING): Official injury/transfer news notes.
+- `news_added` (TIMESTAMP): Timestamp news was posted.
+
+#### ⚙️ System & Transaction Controls
+- `can_transact` (BOOLEAN): Can be transferred flag.
+- `can_select` (BOOLEAN): Can be selected in squad flag.
+- `in_dreamteam` (BOOLEAN): Currently in Dream Team flag.
+- `dreamteam_count` (BIGINT): Number of times in Dream Team.
+- `corners_and_indirect_freekicks_order` (BIGINT/VOID): Corner taker order.
+- `direct_freekicks_order` (BIGINT/VOID): Free kick taker order.
+- `penalties_order` (BIGINT/VOID): Penalty taker order.
+- `_ingested_at` (TIMESTAMP): Bronze UTC ingestion timestamp.
+
+---
 
 ### Table 2: `fpl.bronze.teams_raw`
 *Live team metadata payload from official FPL API (`bootstrap-static/ teams`).*
-- `id` (INT, PK): Team ID (1 to 20).
-- `code` (INT): Team code.
+- `id` (BIGINT, PK): Team ID (1 to 20).
+- `code` (BIGINT): Durable team code.
 - `name` (STRING): Team full name.
-- `short_name` (STRING): 3-letter abbreviation.
-- `strength` (INT): Overall team rating.
-- `strength_overall_home` (INT): Home strength.
-- `strength_overall_away` (INT): Away strength.
-- `strength_attack_home` (INT): Home attack strength.
-- `strength_defence_home` (INT): Home defense strength.
+- `short_name` (STRING): 3-letter abbreviation (`"ARS"`).
+- `strength` (BIGINT): Overall team rating.
+- `strength_overall_home` (BIGINT): Home strength.
+- `strength_overall_away` (BIGINT): Away strength.
+- `strength_attack_home` (BIGINT): Home attack strength.
+- `strength_attack_away` (BIGINT): Away attack strength.
+- `strength_defence_home` (BIGINT): Home defense strength.
+- `strength_defence_away` (BIGINT): Away defense strength.
+- `pulse_id` (BIGINT): Premier League Pulse ID.
 - `_ingested_at` (TIMESTAMP): Ingestion timestamp.
 
 ### Table 3: `fpl.bronze.events_raw`
 *38 Gameweek calendar metadata payload (`bootstrap-static/ events`).*
-- `id` (INT, PK): Gameweek number (1 to 38).
+- `id` (BIGINT, PK): Gameweek number (1 to 38).
 - `name` (STRING): Gameweek display name (`"Gameweek 1"`).
 - `deadline_time` (TIMESTAMP): Transfer deadline.
 - `finished` (BOOLEAN): Completion status.
@@ -54,21 +124,21 @@
 
 ### Table 4: `fpl.bronze.fixtures_raw`
 *Full 380-match Premier League schedule (`fixtures/`).*
-- `id` (INT, PK): Fixture match ID.
-- `event` (INT): Gameweek number.
-- `home_team` (INT, FK): Home team ID.
-- `away_team` (INT, FK): Away team ID.
+- `id` (BIGINT, PK): Fixture match ID.
+- `event` (BIGINT): Gameweek number.
+- `home_team` (BIGINT, FK): Home team ID.
+- `away_team` (BIGINT, FK): Away team ID.
 - `finished` (BOOLEAN): Completion status.
-- `team_h_difficulty` (INT): Home FDR rating.
-- `team_a_difficulty` (INT): Away FDR rating.
+- `team_h_difficulty` (BIGINT): Home FDR rating.
+- `team_a_difficulty` (BIGINT): Away FDR rating.
 - `kickoff_time` (TIMESTAMP): Kickoff timestamp.
 - `_ingested_at` (TIMESTAMP): Ingestion timestamp.
 
 ### Table 5: `fpl.bronze.my_team_raw`
 *Personal squad payload via user FPL Team ID.*
-- `event` (INT): Gameweek number.
-- `overall_rank` (INT): Overall rank.
-- `total_points` (INT): Total cumulative points.
+- `event` (BIGINT): Gameweek number.
+- `overall_rank` (BIGINT): Overall rank.
+- `total_points` (BIGINT): Total cumulative points.
 - `picks` (STRING): JSON string of squad player picks and captain selections.
 - `_ingested_at` (TIMESTAMP): Ingestion timestamp.
 
@@ -126,7 +196,7 @@
 - `crosswalk_status` (STRING): Matching method (`"live_master"`, `"matched_by_durable_code"`, `"matched_by_full_name"`).
 
 ### Table 3: `fpl.silver.players`
-*Current Season Master Player Dimension.*
+*Current Season Master Player Dimension (Filters out 70+ raw noise columns!).*
 - `player_key` (INT, PK): Durable player code.
 - `player_id` (INT): Current season live player ID.
 - `web_name` (STRING): Shirt display name.

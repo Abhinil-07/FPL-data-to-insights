@@ -32,6 +32,9 @@ print("\n--- 📥 Step 1/3: Ingesting Bronze Raw Data (FPL API + GitHub Archive)
 # MAGIC %run ./bronze/06_ingest_github_archive
 
 # COMMAND ----------
+# MAGIC %run ./bronze/07_ingest_player_gw_history
+
+# COMMAND ----------
 print("✅ Bronze Layer Execution Complete!")
 
 # COMMAND ----------
@@ -53,4 +56,4 @@ print("\n--- 🏆 Step 3/3: Building Gold Analytics Tables & 2-Tier Strategy ---
 
 # COMMAND ----------
 print("🎉 ENTIRE FPL PIPELINE EXECUTED SUCCESSFULLY!")
-print("Your live Databricks database (fpl.gold.*) and Streamlit Dashboard are fully refreshed!")
+print("fpl.bronze.*, fpl.silver.*, and fpl.gold.* Delta tables are fully refreshed.")
