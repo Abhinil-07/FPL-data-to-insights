@@ -38,6 +38,14 @@ teams_silver = teams_raw.select(
     F.coalesce(F.col("strength_attack_away").cast("int"), F.lit(1100)).alias("strength_attack_away"),
     F.coalesce(F.col("strength_defence_home").cast("int"), F.lit(1100)).alias("strength_defence_home"),
     F.coalesce(F.col("strength_defence_away").cast("int"), F.lit(1100)).alias("strength_defence_away"),
+    # Current league standings — refreshed every pipeline run
+    F.col("played").cast("int").alias("played"),
+    F.col("win").cast("int").alias("win"),
+    F.col("draw").cast("int").alias("draw"),
+    F.col("loss").cast("int").alias("loss"),
+    F.col("points").cast("int").alias("league_points"),
+    F.col("position").cast("int").alias("league_position"),
+    F.col("form").alias("form"),
     F.col("_ingested_at")
 )
 
@@ -47,4 +55,8 @@ target_table = f"{db_silver}.teams"
 teams_silver.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
 
 print(f"✅ Successfully created Silver teams dimension table: {target_table} ({teams_silver.count()} rows)")
-display(teams_silver)
+display(teams_silver.select(
+    "team_id", "team_name", "short_name",
+    "strength_overall_home", "strength_overall_away",
+    "played", "win", "draw", "loss", "league_points", "league_position", "form"
+))
