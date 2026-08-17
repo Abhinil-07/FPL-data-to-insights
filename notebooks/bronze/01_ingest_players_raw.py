@@ -1,7 +1,21 @@
 # Databricks notebook source
 # COMMAND ----------
 # 01_ingest_players_raw.py
-# Ingest ONLY `fpl.bronze.players_raw` from bootstrap-static/
+# Ingest `fpl.bronze.players_raw` from bootstrap-static/ elements[]
+#
+# Column strategy: keep every column with analytical value. Drop explicitly:
+#   - photo, squad_number, region     → display-only, no analytics use
+#   - pulse_id                         → PL internal ID, never joined
+#   - special, removed, can_select,
+#     can_transact, has_temporary_code → internal FPL admin flags
+#   - *_rank_type columns              → position-group rank variants —
+#                                        Silver handles position normalisation
+#   - direct_freekicks_text,
+#     corners_and_indirect_freekicks_text,
+#     penalties_text                   → human-readable labels for order cols,
+#                                        redundant next to the numeric *_order cols
+#   - ep_next, ep_this                 → FPL's own expected-points model,
+#                                        not reliable / not used in scoring
 
 import os
 import sys
@@ -34,26 +48,51 @@ client = FPLApiClient()
 ingested_at = datetime.utcnow()
 
 # COMMAND ----------
+# Columns intentionally dropped at Bronze.
+# Reason documented per column group above.
+PLAYERS_DROP_COLS = [
+    # Display-only — no analytical value
+    "photo", "squad_number", "region",
+    # Internal PL / FPL admin IDs never used in joins
+    "pulse_id",
+    # Internal FPL admin flags
+    "special", "removed", "can_select", "can_transact", "has_temporary_code",
+    # Position-group rank variants — Silver normalises by position anyway
+    "form_rank_type", "creativity_rank_type", "threat_rank_type",
+    "influence_rank_type", "ict_index_rank_type", "now_cost_rank_type",
+    "points_per_game_rank_type", "selected_rank_type",
+    # Human-readable labels for set-piece order — numeric *_order cols kept
+    "direct_freekicks_text", "corners_and_indirect_freekicks_text", "penalties_text",
+    # FPL's own expected-points model — unreliable, not used in scoring
+    "ep_next", "ep_this",
+]
+
+# COMMAND ----------
 # Fetch bootstrap-static
 data = client.get_bootstrap_static()
 assert data is not None, "Failed to fetch bootstrap-static payload from FPL API"
 
 # COMMAND ----------
-# Process players (elements) dataframe & sanitize nested list/dict fields
+# Build players DataFrame, drop unused columns, sanitize nested types
 players_pdf = pd.DataFrame(data["elements"])
+players_pdf.drop(columns=[c for c in PLAYERS_DROP_COLS if c in players_pdf.columns], inplace=True)
 players_pdf["_ingested_at"] = ingested_at
 players_pdf_clean = sanitize_df_for_delta(players_pdf)
 
-# Convert to Spark DataFrame
+print(f"Columns kept : {len(players_pdf_clean.columns)}")
+print(f"Columns dropped: {[c for c in PLAYERS_DROP_COLS if c in pd.DataFrame(data['elements']).columns]}")
+
 players_df = spark.createDataFrame(players_pdf_clean)
 
 # COMMAND ----------
-# Save to Unity Catalog Delta Table (`fpl.bronze.players_raw`)
+# Save to Unity Catalog Delta Table
 target_table = f"{db_bronze}.players_raw"
 players_df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
-
-print(f"✅ Successfully written {players_df.count()} rows to Unity Catalog table: {target_table}")
+print(f"Written {players_df.count()} rows to {target_table}")
 
 # COMMAND ----------
-# Display sample preview
-display(players_df.select("id", "web_name", "team", "element_type", "now_cost", "total_points", "_ingested_at").limit(10))
+# Preview
+display(players_df.select(
+    "id", "web_name", "element_type", "team", "now_cost",
+    "total_points", "selected_by_percent", "expected_goals", "_ingested_at"
+).limit(10))

@@ -2,23 +2,28 @@
 # COMMAND ----------
 # 07_ingest_player_gw_history.py
 #
-# Phase 1.4 — Bronze: Incremental ingestion of current-season per-player
-# gameweek history from FPL API element-summary/{player_id}/ endpoint.
+# Bronze: Incremental ingestion of current-season per-player GW match stats.
 #
-# Design principles:
-#   - APPEND-ONLY: historical GW data never changes once data_checked=True.
-#     Never overwrites the table — only adds net-new GW rows.
-#   - INCREMENTAL: drives off events_raw.data_checked to know which GWs are
-#     final. Only fetches data for GWs not already stored. Zero API calls
-#     made if no new GWs have been checked since last run.
-#   - GRACEFUL PRE-SEASON: exits cleanly with zero rows if no GWs are
-#     data_checked yet (season not started or between GWs).
-#   - RATE-LIMITED: uses FPLApiClient which enforces 0.3s delay + 3 retries.
-#     ~700 players = ~3-5 minutes total. Only runs when genuinely needed.
+# Design:
+#   - SOURCE: event/{gw_id}/live/ endpoint — ONE API call per new GW
+#     (replaces the old element-summary loop of ~700 calls per GW)
+#   - INCREMENTAL: only fetches GWs with data_checked=True not already stored
+#   - APPEND-ONLY: finalised GW data never changes — never overwrites
+#   - PRE-SEASON SAFE: exits cleanly if no GWs are finalised yet
 #
 # Output table: fpl.bronze.player_gw_history_raw
-#   One row per player per gameweek for the current season.
-#   Unioned with bronze.archive_player_gws in Silver to give full 3+ season history.
+#   One row per player per GW — match stats only.
+#   Does NOT contain fixture context (was_home, opponent etc.) or economic
+#   data (price, transfers, ownership). Those come from:
+#     - fixtures_raw + players_raw      → fixture context (joined in Silver)
+#     - players_gw_snapshot_raw         → economic data (notebook 08, same run)
+#
+# Column strategy: keep all stats returned by the live endpoint.
+#   No drops needed — the endpoint returns exactly the match stats we need.
+#
+# NOTE: notebook 08_snapshot_player_economics MUST run in the same pipeline
+#   refresh immediately after this notebook. It snapshots players_raw before
+#   the next run overwrites it.
 
 import os
 import sys
@@ -33,65 +38,57 @@ sys.path.append(os.path.abspath("./"))
 from src.fpl_api import FPLApiClient
 
 # COMMAND ----------
-# Load config
 config_path = "config/config.yaml" if os.path.exists("config/config.yaml") else "../../config/config.yaml"
 with open(config_path, "r") as f:
     config = yaml.safe_load(f)
 
-db_bronze = config["databases"]["bronze"]
+db_bronze    = config["databases"]["bronze"]
 target_table = f"{db_bronze}.player_gw_history_raw"
-ingested_at = datetime.utcnow()
+ingested_at  = datetime.utcnow()
 
 client = FPLApiClient()
 print(f"Target table : {target_table}")
 print(f"Ingested at  : {ingested_at}")
 
 # COMMAND ----------
-# STEP 1: Determine which GWs are fully finalised in events_raw.
-# data_checked=True means FPL has locked in bonus points — safe to treat as final.
-# Using data_checked (not just finished) avoids ingesting provisional scores
-# that could still change (bonus point adjustments happen after final whistle).
+# STEP 1: Determine finalised GWs from events_raw (data_checked = True).
+# data_checked means FPL has locked in bonus points — scores are truly final.
 
 print("\n--- Step 1: Reading finalised GWs from events_raw ---")
 
 try:
     events_df = spark.read.table(f"{db_bronze}.events_raw")
     finalised_gws = set(
-        row["id"]
-        for row in events_df
-            .filter("data_checked = true")
-            .select("id")
-            .collect()
+        int(row["id"])
+        for row in events_df.filter("data_checked = true").select("id").collect()
     )
-    print(f"Finalised (data_checked) GWs in events_raw: {sorted(finalised_gws)}")
+    print(f"Finalised GWs : {sorted(finalised_gws)}")
 except Exception as e:
     print(f"WARNING: Could not read events_raw ({e}). Run 03_ingest_events_raw.py first.")
     finalised_gws = set()
 
 if not finalised_gws:
-    print("\nNo finalised GWs found — season not started or events_raw not populated.")
-    print("Nothing to ingest. Exiting cleanly.")
+    print("\nNo finalised GWs — season not started or events_raw not populated. Exiting cleanly.")
     dbutils.notebook.exit("No finalised GWs — skipped cleanly.")
 
 # COMMAND ----------
-# STEP 2: Determine which GWs are already stored in player_gw_history_raw.
-# On first run (table doesn't exist), stored_gws = empty set.
+# STEP 2: Determine which GWs are already in player_gw_history_raw.
 
-print("\n--- Step 2: Checking already-stored GWs in player_gw_history_raw ---")
+print("\n--- Step 2: Checking already-stored GWs ---")
 
 try:
     existing_df = spark.read.table(target_table)
     stored_gws = set(
-        row["round"]
+        int(row["round"])
         for row in existing_df.select("round").distinct().collect()
     )
-    print(f"Already stored GWs: {sorted(stored_gws)}")
+    print(f"Already stored GWs : {sorted(stored_gws)}")
 except Exception:
     stored_gws = set()
-    print("Table does not exist yet — first run, all finalised GWs are new.")
+    print("Table does not exist yet — first run.")
 
 # COMMAND ----------
-# STEP 3: Compute net-new GWs to ingest.
+# STEP 3: Compute net-new GWs.
 
 new_gws = finalised_gws - stored_gws
 print(f"\n--- Step 3: Net-new GWs to ingest: {sorted(new_gws)} ---")
@@ -101,104 +98,71 @@ if not new_gws:
     dbutils.notebook.exit("Already up to date — no new GWs to ingest.")
 
 # COMMAND ----------
-# STEP 4: Get all active player IDs from players_raw.
-# This is the source of truth for which player IDs to loop over.
-# players_raw is already populated by 01_ingest_players_raw.py.
+# STEP 4: Fetch GW live data — ONE API call per new GW.
+# event/{gw_id}/live/ returns stats for ALL ~700 players in a single response.
 
-print("\n--- Step 4: Loading player IDs from players_raw ---")
+print(f"\n--- Step 4: Fetching live GW data ({len(new_gws)} API call(s)) ---")
 
-try:
-    players_df = spark.read.table(f"{db_bronze}.players_raw")
-    player_ids = [row["id"] for row in players_df.select("id").collect()]
-    print(f"Total players to fetch: {len(player_ids)}")
-except Exception as e:
-    print(f"ERROR: Could not read players_raw ({e}). Run 01_ingest_players_raw.py first.")
-    raise
+all_history_rows = []
 
-# COMMAND ----------
-# STEP 5: Loop through all players and collect GW history rows for new_gws only.
-# - Calls element-summary/{player_id}/ for every active player (~700 calls).
-# - Filters history rows to only those where round is in new_gws.
-# - Appends player_fpl_id to each row (the element field in history also has it,
-#   but we add it explicitly for clarity since it's the primary join key).
-# - Failed/missing players are logged and skipped — do not crash the pipeline.
+for gw in sorted(new_gws):
+    print(f"  Calling event/{gw}/live/ ...")
+    live_data = client.get_event_live(gw)
 
-print(f"\n--- Step 5: Fetching GW history for {len(player_ids)} players ---")
-print(f"           Collecting rows for GWs: {sorted(new_gws)}")
-print(f"           Estimated time: {len(player_ids) * 0.3 / 60:.1f}–{len(player_ids) * 0.5 / 60:.1f} minutes\n")
-
-all_rows = []
-failed_ids = []
-
-for i, player_id in enumerate(player_ids, start=1):
-    if i % 100 == 0 or i == 1:
-        print(f"  Progress: {i}/{len(player_ids)} players processed — {len(all_rows)} rows collected so far")
-
-    summary = client.get_element_summary(player_id)
-
-    if summary is None:
-        failed_ids.append(player_id)
+    if live_data is None:
+        print(f"  WARNING: Could not fetch live data for GW {gw}. Skipping.")
         continue
 
-    history = summary.get("history", [])
+    elements = live_data.get("elements", [])
+    print(f"  GW {gw}: {len(elements)} player entries returned")
 
-    # Filter to only new GW rows
-    new_rows = [row for row in history if row.get("round") in new_gws]
+    for element in elements:
+        stats = element.get("stats", {})
+        row = {
+            "element": element["id"],
+            "round":   gw,
+            **stats,
+            "_ingested_at": str(ingested_at),
+        }
+        all_history_rows.append(row)
 
-    for row in new_rows:
-        row["_player_fpl_id"] = player_id   # explicit denormalised key
-        row["_ingested_at"]   = str(ingested_at)
-        all_rows.append(row)
-
-print(f"\n  Completed: {len(player_ids)} players processed")
-print(f"  Rows collected  : {len(all_rows)}")
-print(f"  Failed player IDs ({len(failed_ids)}): {failed_ids[:20]}{'...' if len(failed_ids) > 20 else ''}")
+print(f"\n  Total rows collected: {len(all_history_rows)}")
 
 # COMMAND ----------
-# STEP 6: Build Spark DataFrame and append to Delta table.
-# Uses astype(str) for schema stability — same pattern as archive notebook.
-# Silver layer casts columns to correct types.
+# STEP 5: Write to player_gw_history_raw.
 
-if not all_rows:
-    print("\nNo rows collected (players may have 0 minutes in these GWs). Exiting.")
-    dbutils.notebook.exit("No rows to write — zero-minute GWs or all players failed.")
+if not all_history_rows:
+    print("\nNo rows collected. Exiting.")
+    dbutils.notebook.exit("No rows to write.")
 
-print(f"\n--- Step 6: Writing {len(all_rows)} rows to {target_table} ---")
+print(f"\n--- Step 5: Writing {len(all_history_rows)} rows to {target_table} ---")
 
-# Convert nested types to JSON strings for Delta compatibility
 def sanitize_for_delta(row: dict) -> dict:
-    return {
-        k: json.dumps(v) if isinstance(v, (list, dict)) else v
-        for k, v in row.items()
-    }
+    return {k: json.dumps(v) if isinstance(v, (list, dict)) else v for k, v in row.items()}
 
-pdf = pd.DataFrame([sanitize_for_delta(r) for r in all_rows])
-pdf = pdf.astype(str)   # full string cast for cross-GW schema stability
+history_pdf = pd.DataFrame([sanitize_for_delta(r) for r in all_history_rows]).astype(str)
+history_spark_df = spark.createDataFrame(history_pdf)
 
-spark_df = spark.createDataFrame(pdf)
-
-spark_df.write \
+history_spark_df.write \
     .mode("append") \
     .option("mergeSchema", "true") \
     .format("delta") \
     .saveAsTable(target_table)
 
-print(f"Successfully appended {spark_df.count()} rows to {target_table}")
+print(f"Appended {history_spark_df.count()} rows to {target_table}")
 
 # COMMAND ----------
-# STEP 7: Verify — show row counts per GW after this run.
+# STEP 6: Post-run verification.
 
-print("\n--- Step 7: Post-run verification ---")
-verification = spark.sql(f"""
-    SELECT
-        CAST(round AS INT)          AS gw,
-        COUNT(*)                    AS total_rows,
-        COUNT(DISTINCT _player_fpl_id) AS unique_players
+print("\n--- Step 6: Post-run verification ---")
+spark.sql(f"""
+    SELECT CAST(round AS INT) AS gw,
+           COUNT(*)              AS player_rows,
+           COUNT(DISTINCT element) AS unique_players
     FROM {target_table}
     GROUP BY CAST(round AS INT)
     ORDER BY gw
-""")
-display(verification)
+""").display()
 
-print(f"\nDone. GWs now stored in {target_table}: "
-      f"{sorted(stored_gws | new_gws)}")
+print(f"\nDone. GWs now in {target_table}: {sorted(stored_gws | new_gws)}")
+print("\nREMINDER: Run 08_snapshot_player_economics next to capture price/ownership data.")

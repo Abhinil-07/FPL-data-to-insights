@@ -1,7 +1,13 @@
 # Databricks notebook source
 # COMMAND ----------
 # 03_ingest_events_raw.py
-# Ingest ONLY `fpl.bronze.events_raw` (Gameweek metadata) from bootstrap-static/
+# Ingest `fpl.bronze.events_raw` (GW metadata) from bootstrap-static/ events[]
+#
+# Column strategy: keep all status, deadline, aggregate, and chip columns.
+# Drop explicitly:
+#   - deadline_time_game_offset → internal game clock offset, not used
+#   - cup_leagues_created       → FPL admin flag, not relevant to analytics
+#   - h2h_ko_matches_created    → FPL admin flag, not relevant to analytics
 
 import os
 import sys
@@ -24,7 +30,6 @@ def sanitize_df_for_delta(pdf: pd.DataFrame) -> pd.DataFrame:
     return pdf_clean
 
 # COMMAND ----------
-# Load config
 config_path = "config/config.yaml" if os.path.exists("config/config.yaml") else "../../config/config.yaml"
 with open(config_path, "r") as f:
     config = yaml.safe_load(f)
@@ -34,26 +39,37 @@ client = FPLApiClient()
 ingested_at = datetime.utcnow()
 
 # COMMAND ----------
-# Fetch bootstrap-static
+# Columns intentionally dropped at Bronze.
+EVENTS_DROP_COLS = [
+    # Internal game clock offset — no analytical use
+    "deadline_time_game_offset",
+    # FPL admin flags — not relevant to GW analytics
+    "cup_leagues_created",
+    "h2h_ko_matches_created",
+]
+
+# COMMAND ----------
 data = client.get_bootstrap_static()
 assert data is not None, "Failed to fetch bootstrap-static payload from FPL API"
 
-# COMMAND ----------
-# Process events (gameweeks) dataframe
 events_pdf = pd.DataFrame(data["events"])
+events_pdf.drop(columns=[c for c in EVENTS_DROP_COLS if c in events_pdf.columns], inplace=True)
 events_pdf["_ingested_at"] = ingested_at
 events_pdf_clean = sanitize_df_for_delta(events_pdf)
 
-# Convert to Spark DataFrame
+print(f"Columns kept : {len(events_pdf_clean.columns)}")
+
 events_df = spark.createDataFrame(events_pdf_clean)
 
 # COMMAND ----------
-# Save to Unity Catalog Delta Table (`fpl.bronze.events_raw`)
 target_table = f"{db_bronze}.events_raw"
 events_df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
-
-print(f"✅ Successfully written {events_df.count()} rows to Unity Catalog table: {target_table}")
+print(f"Written {events_df.count()} rows to {target_table}")
 
 # COMMAND ----------
-# Display sample preview
-display(events_df.select("id", "name", "deadline_time", "is_current", "is_next", "finished", "_ingested_at").limit(38))
+display(events_df.select(
+    "id", "name", "deadline_time",
+    "finished", "data_checked",
+    "is_previous", "is_current", "is_next",
+    "average_entry_score", "transfers_made", "_ingested_at"
+).limit(38))

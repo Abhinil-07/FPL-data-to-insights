@@ -55,6 +55,14 @@ class FPLApiClient:
         """Fetch gameweek history and upcoming fixtures for a specific player ID."""
         return self._get(f"element-summary/{player_id}/")
 
+    def get_event_live(self, gw_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch live GW stats for ALL players in a single call.
+        Returns elements[] where each entry has id + stats{} for every player.
+        One call per GW replaces the 700-call element-summary loop.
+        """
+        logger.info(f"Fetching live GW data for GW {gw_id}...")
+        return self._get(f"event/{gw_id}/live/")
+
     def get_my_team(self, team_id: Optional[int]) -> Optional[Dict[str, Any]]:
         """Fetch user's squad data for current gameweek. Returns None gracefully if team_id is missing."""
         if not team_id:

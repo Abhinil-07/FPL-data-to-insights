@@ -1,7 +1,11 @@
 # Databricks notebook source
 # COMMAND ----------
 # 02_ingest_teams_raw.py
-# Ingest ONLY `fpl.bronze.teams_raw` from bootstrap-static/
+# Ingest `fpl.bronze.teams_raw` from bootstrap-static/ teams[]
+#
+# Column strategy: keep all strength, form, and result columns.
+# Drop explicitly:
+#   - pulse_id → PL internal team ID, never used in joins
 
 import os
 import sys
@@ -24,7 +28,6 @@ def sanitize_df_for_delta(pdf: pd.DataFrame) -> pd.DataFrame:
     return pdf_clean
 
 # COMMAND ----------
-# Load config
 config_path = "config/config.yaml" if os.path.exists("config/config.yaml") else "../../config/config.yaml"
 with open(config_path, "r") as f:
     config = yaml.safe_load(f)
@@ -34,26 +37,35 @@ client = FPLApiClient()
 ingested_at = datetime.utcnow()
 
 # COMMAND ----------
-# Fetch bootstrap-static
+# Columns intentionally dropped at Bronze.
+TEAMS_DROP_COLS = [
+    # PL internal ID — never used in any join or analytics
+    "pulse_id",
+]
+
+# COMMAND ----------
 data = client.get_bootstrap_static()
 assert data is not None, "Failed to fetch bootstrap-static payload from FPL API"
 
-# COMMAND ----------
-# Process teams dataframe
 teams_pdf = pd.DataFrame(data["teams"])
+teams_pdf.drop(columns=[c for c in TEAMS_DROP_COLS if c in teams_pdf.columns], inplace=True)
 teams_pdf["_ingested_at"] = ingested_at
 teams_pdf_clean = sanitize_df_for_delta(teams_pdf)
 
-# Convert to Spark DataFrame
+print(f"Columns kept : {len(teams_pdf_clean.columns)}")
+
 teams_df = spark.createDataFrame(teams_pdf_clean)
 
 # COMMAND ----------
-# Save to Unity Catalog Delta Table (`fpl.bronze.teams_raw`)
 target_table = f"{db_bronze}.teams_raw"
 teams_df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(target_table)
-
-print(f"✅ Successfully written {teams_df.count()} rows to Unity Catalog table: {target_table}")
+print(f"Written {teams_df.count()} rows to {target_table}")
 
 # COMMAND ----------
-# Display sample preview
-display(teams_df.select("id", "name", "short_name", "strength", "strength_overall_home", "strength_overall_away", "_ingested_at").limit(20))
+display(teams_df.select(
+    "id", "name", "short_name", "code",
+    "strength_overall_home", "strength_overall_away",
+    "strength_attack_home", "strength_attack_away",
+    "strength_defence_home", "strength_defence_away",
+    "played", "win", "draw", "loss", "position", "_ingested_at"
+).limit(20))
