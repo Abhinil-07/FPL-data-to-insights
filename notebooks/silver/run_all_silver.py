@@ -15,10 +15,10 @@ print("🧹 Starting Silver Layer & Crosswalk Execution...")
 # MAGIC %run ./03_build_silver_players
 
 # COMMAND ----------
-# MAGIC %run ./04_build_silver_player_gw_history
+# MAGIC %run ./05_build_silver_fixtures
 
 # COMMAND ----------
-# MAGIC %run ./05_build_silver_fixtures
+# MAGIC %run ./04_build_silver_player_gw_history
 
 # COMMAND ----------
 print("🎉 Entire Silver Layer (Phase 3) completed successfully!")
