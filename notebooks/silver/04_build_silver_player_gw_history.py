@@ -80,33 +80,33 @@ ta_score    = F.col("team_a_score").cast("int") if "team_a_score" in col_list el
 
 # Clean Archive rows
 archive_prep = archive_gws.select(
-    element_col.cast("int").alias("source_player_id"),
+    element_col.cast("double").cast("int").alias("source_player_id"),
     F.col("season"),
-    F.col("GW").cast("int").alias("gameweek"),
+    F.col("GW").cast("double").cast("int").alias("gameweek"),
     fixture_col.alias("fixture_id"),
     kickoff_col.alias("kickoff_time"),
     F.trim(F.col("name")).alias("player_name"),
     pos_col.alias("position_name"),
-    team_col.alias("team_id"),
+    team_col.cast("double").cast("int").alias("team_id"),
     F.coalesce(F.col("was_home").cast("boolean"), F.lit(True)).alias("is_home"),
-    F.coalesce(F.col("opponent_team").cast("int"), F.lit(0)).alias("opponent_team_id"),
+    F.coalesce(F.col("opponent_team").cast("double").cast("int"), F.lit(0)).alias("opponent_team_id"),
     th_score.alias("team_h_score"),
     ta_score.alias("team_a_score"),
-    F.coalesce(F.col("total_points").cast("int"), F.lit(0)).alias("total_points"),
-    F.coalesce(F.col("minutes").cast("int"), F.lit(0)).alias("minutes"),
-    F.coalesce(starts_col.cast("int"), F.lit(0)).alias("starts"),
-    F.coalesce(F.col("goals_scored").cast("int"), F.lit(0)).alias("goals_scored"),
-    F.coalesce(F.col("assists").cast("int"), F.lit(0)).alias("assists"),
-    F.coalesce(F.col("clean_sheets").cast("int"), F.lit(0)).alias("clean_sheets"),
-    F.coalesce(F.col("goals_conceded").cast("int"), F.lit(0)).alias("goals_conceded"),
-    F.coalesce(F.col("own_goals").cast("int"), F.lit(0)).alias("own_goals"),
-    F.coalesce(F.col("penalties_saved").cast("int"), F.lit(0)).alias("penalties_saved"),
-    F.coalesce(F.col("penalties_missed").cast("int"), F.lit(0)).alias("penalties_missed"),
-    F.coalesce(F.col("yellow_cards").cast("int"), F.lit(0)).alias("yellow_cards"),
-    F.coalesce(F.col("red_cards").cast("int"), F.lit(0)).alias("red_cards"),
-    F.coalesce(F.col("saves").cast("int"), F.lit(0)).alias("saves"),
-    F.coalesce(F.col("bonus").cast("int"), F.lit(0)).alias("bonus"),
-    F.coalesce(F.col("bps").cast("int"), F.lit(0)).alias("bps"),
+    F.coalesce(F.col("total_points").cast("double").cast("int"), F.lit(0)).alias("total_points"),
+    F.coalesce(F.col("minutes").cast("double").cast("int"), F.lit(0)).alias("minutes"),
+    F.coalesce(starts_col.cast("double").cast("int"), F.lit(0)).alias("starts"),
+    F.coalesce(F.col("goals_scored").cast("double").cast("int"), F.lit(0)).alias("goals_scored"),
+    F.coalesce(F.col("assists").cast("double").cast("int"), F.lit(0)).alias("assists"),
+    F.coalesce(F.col("clean_sheets").cast("double").cast("int"), F.lit(0)).alias("clean_sheets"),
+    F.coalesce(F.col("goals_conceded").cast("double").cast("int"), F.lit(0)).alias("goals_conceded"),
+    F.coalesce(F.col("own_goals").cast("double").cast("int"), F.lit(0)).alias("own_goals"),
+    F.coalesce(F.col("penalties_saved").cast("double").cast("int"), F.lit(0)).alias("penalties_saved"),
+    F.coalesce(F.col("penalties_missed").cast("double").cast("int"), F.lit(0)).alias("penalties_missed"),
+    F.coalesce(F.col("yellow_cards").cast("double").cast("int"), F.lit(0)).alias("yellow_cards"),
+    F.coalesce(F.col("red_cards").cast("double").cast("int"), F.lit(0)).alias("red_cards"),
+    F.coalesce(F.col("saves").cast("double").cast("int"), F.lit(0)).alias("saves"),
+    F.coalesce(F.col("bonus").cast("double").cast("int"), F.lit(0)).alias("bonus"),
+    F.coalesce(F.col("bps").cast("double").cast("int"), F.lit(0)).alias("bps"),
     F.coalesce(xg_col.cast("double"), F.lit(0.0)).alias("expected_goals"),
     F.coalesce(xa_col.cast("double"), F.lit(0.0)).alias("expected_assists"),
     F.coalesce(xgi_col.cast("double"), F.lit(0.0)).alias("expected_goal_involvements"),
@@ -122,13 +122,13 @@ archive_prep = archive_gws.select(
     F.col("_ingested_at")
 )
 
-# Join Crosswalk on (source_player_id, season) to attach durable player_key
+# Join Crosswalk on (source_player_id, season) — INNER JOIN filters out departed/retired players
 stream1_archive = archive_prep.join(
     crosswalk.select("player_key", "season", "source_player_id").distinct(),
     (archive_prep.source_player_id == crosswalk.source_player_id) & (archive_prep.season == crosswalk.season),
-    "left"
+    "inner"
 ).select(
-    F.coalesce(crosswalk.player_key, archive_prep.source_player_id).cast("int").alias("player_key"),
+    crosswalk.player_key.cast("int").alias("player_key"),
     archive_prep.player_name,
     archive_prep.position_name,
     archive_prep.team_id,

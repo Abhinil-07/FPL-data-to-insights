@@ -39,8 +39,8 @@ live_players = spark.read.table(f"{db_bronze}.players_raw").select(
 hist_players = spark.read.table(f"{db_bronze}.archive_players_raw")
 
 hist_prep = hist_players.select(
-    F.col("code").cast("int").alias("hist_code"),
-    F.col("id").cast("int").alias("hist_player_id"),
+    F.col("code").cast("double").cast("int").alias("hist_code"),
+    F.col("id").cast("double").cast("int").alias("hist_player_id"),
     F.col("season"),
     F.trim(F.col("first_name")).alias("hist_first_name"),
     F.trim(F.col("second_name")).alias("hist_second_name"),
