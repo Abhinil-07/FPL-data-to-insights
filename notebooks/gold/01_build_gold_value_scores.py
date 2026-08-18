@@ -105,15 +105,17 @@ active_players = players.filter(F.coalesce(F.col("status"), F.lit("a")) != "u") 
 
 # COMMAND ----------
 # 5. Adaptive Mode Switch (Pre-Season vs In-Season)
-in_season = active_players.agg(F.sum("minutes")).collect()[0][0] > 0
+# Check if any official Premier League fixtures have finished in the current season
+finished_fixtures_count = fixtures.filter(F.col("finished") == True).count()
+in_season = finished_fixtures_count > 0
 
 if in_season:
-    print("In-Season detected: Using live rolling form and current season minutes.")
+    print(f"In-Season detected ({finished_fixtures_count} finished matches): Using live rolling form and current season minutes.")
     evaluated_df = active_players \
         .withColumn("effective_form", F.col("form")) \
         .withColumn("effective_minutes", F.col("minutes"))
 else:
-    print("Pre-Season detected: Using historical baseline PPG and historical minutes.")
+    print("Pre-Season detected (0 finished matches): Using historical baseline PPG and historical minutes.")
     evaluated_df = active_players \
         .withColumn("effective_form", F.col("hist_ppg")) \
         .withColumn("effective_minutes", F.col("hist_minutes"))
