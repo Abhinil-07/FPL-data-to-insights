@@ -65,6 +65,8 @@ PLAYERS_DROP_COLS = [
     "direct_freekicks_text", "corners_and_indirect_freekicks_text", "penalties_text",
     # FPL's own expected-points model — unreliable, not used in scoring
     "ep_next", "ep_this",
+    # String-prefixed duplicate of `code` (e.g. "p80201" vs 80201) — redundant
+    "opta_code",
 ]
 
 # COMMAND ----------
