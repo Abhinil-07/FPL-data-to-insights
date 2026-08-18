@@ -68,7 +68,7 @@ xgi_col     = F.col("xGI") if "xGI" in col_list else F.col("expected_goal_involv
 xgc_col     = F.col("xGC") if "xGC" in col_list else F.col("expected_goals_conceded") if "expected_goals_conceded" in col_list else F.lit(0.0)
 starts_col  = F.col("starts") if "starts" in col_list else F.when(F.col("minutes").cast("int") > 0, F.lit(1)).otherwise(F.lit(0))
 pos_col     = F.col("position") if "position" in col_list else F.lit("UNKNOWN")
-team_col    = F.col("team") if "team" in col_list else F.lit(None).cast("int")
+team_col    = F.trim(F.col("team")) if "team" in col_list else F.lit("UNKNOWN")
 val_col     = (F.col("value").cast("double") / 10.0) if "value" in col_list else F.lit(None).cast("double")
 tin_col     = F.col("transfers_in").cast("int") if "transfers_in" in col_list else F.lit(0)
 tout_col    = F.col("transfers_out").cast("int") if "transfers_out" in col_list else F.lit(0)
@@ -87,7 +87,7 @@ archive_prep = archive_gws.select(
     kickoff_col.alias("kickoff_time"),
     F.trim(F.col("name")).alias("player_name"),
     pos_col.alias("position_name"),
-    team_col.cast("double").cast("int").alias("team_id"),
+    team_col.alias("team_name"),
     F.coalesce(F.col("was_home").cast("boolean"), F.lit(True)).alias("is_home"),
     F.coalesce(F.col("opponent_team").cast("double").cast("int"), F.lit(0)).alias("opponent_team_id"),
     th_score.alias("team_h_score"),
@@ -122,16 +122,24 @@ archive_prep = archive_gws.select(
     F.col("_ingested_at")
 )
 
-# Join Crosswalk on (source_player_id, season) — INNER JOIN filters out departed/retired players
+# Read silver teams for team_id lookup
+silver_teams = spark.read.table(f"{db_silver}.teams").select("team_id", "team_name")
+
+# Join Crosswalk (INNER JOIN to keep active players only) and Teams (LEFT JOIN for team_id)
 stream1_archive = archive_prep.join(
     crosswalk.select("player_key", "season", "source_player_id").distinct(),
     (archive_prep.source_player_id == crosswalk.source_player_id) & (archive_prep.season == crosswalk.season),
     "inner"
+).join(
+    silver_teams,
+    archive_prep.team_name == silver_teams.team_name,
+    "left"
 ).select(
     crosswalk.player_key.cast("int").alias("player_key"),
     archive_prep.player_name,
     archive_prep.position_name,
-    archive_prep.team_id,
+    F.coalesce(silver_teams.team_id, F.lit(0)).cast("int").alias("team_id"),
+    archive_prep.team_name,
     archive_prep.season,
     archive_prep.gameweek,
     archive_prep.fixture_id,
@@ -206,7 +214,8 @@ if live_stream_exists:
             F.col("player_key"),
             F.col("web_name").alias("player_name"),
             F.col("position_name"),
-            F.col("team_id")
+            F.col("team_id"),
+            F.col("team_name")
         ),
         live_raw.element.cast("int") == F.col("p_id"),
         "left"
@@ -260,6 +269,7 @@ if live_stream_exists:
         live_with_snapshot.player_name,
         live_with_snapshot.position_name,
         live_with_snapshot.team_id,
+        live_with_snapshot.team_name,
         F.lit(current_season).alias("season"),
         live_with_snapshot.round.cast("int").alias("gameweek"),
         live_with_snapshot.fixture_id,
