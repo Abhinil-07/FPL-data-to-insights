@@ -18,6 +18,12 @@ print("🧹 Starting Silver Layer & Crosswalk Execution...")
 # MAGIC %run ./05_build_silver_fixtures
 
 # COMMAND ----------
+# MAGIC %run ./06_build_silver_gameweeks
+
+# COMMAND ----------
+# MAGIC %run ./07_build_silver_my_team
+
+# COMMAND ----------
 # MAGIC %run ./04_build_silver_player_gw_history
 
 # COMMAND ----------
