@@ -181,21 +181,22 @@ print(f"  Stream 1 ready: {archive_count:,} historical match rows processed.")
 print("\n--- Processing Stream 2: Live Current Season Data ---")
 
 live_stream_exists = False
-try:
-    live_raw = spark.read.table(f"{db_bronze}.player_gw_history_raw")
+live_table_name = f"{db_bronze}.player_gw_history_raw"
+
+if spark.catalog.tableExists(live_table_name):
+    live_raw = spark.read.table(live_table_name)
     if live_raw.count() > 0:
         live_stream_exists = True
-except Exception:
-    print("  Note: bronze.player_gw_history_raw does not exist or has 0 rows yet (pre-season).")
 
 if live_stream_exists:
     silver_players  = spark.read.table(f"{db_silver}.players")
     silver_fixtures = spark.read.table(f"{db_silver}.fixtures")
     
     # Read snapshot if available
-    try:
-        snapshot_raw = spark.read.table(f"{db_bronze}.players_gw_snapshot_raw")
-    except Exception:
+    snapshot_table_name = f"{db_bronze}.players_gw_snapshot_raw"
+    if spark.catalog.tableExists(snapshot_table_name):
+        snapshot_raw = spark.read.table(snapshot_table_name)
+    else:
         snapshot_raw = None
 
     # Step A: Attach Player metadata (player_key, name, position, team)
