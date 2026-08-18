@@ -1,12 +1,14 @@
 # Databricks notebook source
 # COMMAND ----------
 # 01_build_gold_value_scores.py
-# Phase 4 — Gold: Position-Normalized Player Valuation & 2-Tier Strategy Matrix
+# Phase 4 — Gold: Position-Normalized Player Valuation & Strategy Matrix
 #
 # Builds: fpl.gold.value_scores
-# Supports BOTH:
-#   1. Pre-Season (GW0) Squad Builder: Derives baseline form & reliability from historical match logs + set-pieces + GW1-5 FDR.
-#   2. In-Season Rolling Transfers: Uses live rolling form, minutes reliability, and upcoming 5-GW fixture swings.
+# Delivers:
+#   1. quality_score & position_quality_rank: True player quality (Haaland, Bruno, Gabriel, Palmer, Raya).
+#   2. value_score & position_value_rank: Budget efficiency ROI (Points / Output per £m).
+#   3. strategy_tier: 🛡️ Season Anchor (Set & Forget) vs 🔄 Rolling Transfer Target.
+#   4. Pre-Season & In-Season Adaptability: Automatic baseline from historical season when live minutes == 0.
 
 import os
 import sys
@@ -34,7 +36,7 @@ fixtures = spark.read.table(f"{db_silver}.fixtures")
 player_gw_history = spark.read.table(f"{db_silver}.player_gw_history")
 
 # COMMAND ----------
-# 2. Upcoming 5-Gameweek Fixture Difficulty Ease per team (Ordered by Gameweek)
+# 2. Upcoming 5-Gameweek Fixture Difficulty Ease per team (Ordered chronologically by Gameweek)
 home_upcoming = fixtures.filter(F.col("finished") == False).select(
     F.col("home_team_id").alias("team_id"),
     F.col("gameweek"),
@@ -58,32 +60,34 @@ fixture_ease = all_upcoming.withColumn(
  .agg(
      F.round(F.avg("fdr"), 2).alias("avg_upcoming_fdr")
  ).withColumn(
+     # Invert FDR so higher number = easier fixtures (5.0 - 2.0 = 3.0 Ease Score)
      "fixture_ease_score", 
      F.round(F.lit(5.0) - F.col("avg_upcoming_fdr"), 2)
  )
 
 # COMMAND ----------
-# 3. Derive Historical Baseline Performance for Pre-Season & Long-Term Reliability
-# Aggregates the most recent completed historical season from silver.player_gw_history
+# 3. Derive Historical Baseline Performance (Strictly on matches played minutes > 0)
 latest_hist_season = player_gw_history.filter(F.col("season") != config.get("current_season", "2026-27")) \
     .agg(F.max("season")).collect()[0][0]
 
 print(f"Historical baseline benchmark season: {latest_hist_season}")
 
-hist_baseline = player_gw_history.filter(F.col("season") == latest_hist_season) \
-    .groupBy("player_key") \
-    .agg(
-        F.count("gameweek").alias("hist_matches"),
-        F.sum("minutes").alias("hist_minutes"),
-        F.round(F.avg("total_points"), 2).alias("hist_ppg"),
-        F.round(F.sum("expected_goals"), 2).alias("hist_xg"),
-        F.round(F.sum("expected_assists"), 2).alias("hist_xa"),
-        F.round(F.sum("expected_goal_involvements"), 2).alias("hist_xgi")
-    )
+# Aggregate stats on appearances where player actually played
+hist_baseline = player_gw_history.filter(
+    (F.col("season") == latest_hist_season) & (F.col("minutes") > 0)
+).groupBy("player_key") \
+ .agg(
+     F.count("gameweek").alias("hist_matches_played"),
+     F.sum("minutes").alias("hist_minutes"),
+     F.sum("total_points").alias("hist_total_points"),
+     F.round(F.avg("total_points"), 2).alias("hist_ppg"), # True Points-Per-Appearance
+     F.round(F.sum("expected_goals"), 2).alias("hist_xg"),
+     F.round(F.sum("expected_assists"), 2).alias("hist_xa"),
+     F.round(F.sum("expected_goal_involvements"), 2).alias("hist_xgi")
+ )
 
 # COMMAND ----------
-# 4. Join Players with Fixture Ease & Historical Baseline
-# Filter out players who are unavailable/transferred out (status == 'u')
+# 4. Join Active Players with Fixture Ease & Historical Baseline
 active_players = players.filter(F.coalesce(F.col("status"), F.lit("a")) != "u") \
     .join(fixture_ease, "team_id", "left") \
     .join(hist_baseline, "player_key", "left") \
@@ -92,13 +96,15 @@ active_players = players.filter(F.coalesce(F.col("status"), F.lit("a")) != "u") 
         "avg_upcoming_fdr": 2.5,
         "hist_ppg": 0.0,
         "hist_minutes": 0,
-        "hist_matches": 0,
+        "hist_matches_played": 0,
+        "hist_total_points": 0,
+        "hist_xg": 0.0,
+        "hist_xa": 0.0,
         "hist_xgi": 0.0
     })
 
 # COMMAND ----------
-# 5. Compute Adaptive Form & Minutes (Pre-Season vs In-Season)
-# If current season minutes == 0, use historical points per game (PPG) and historical minutes
+# 5. Adaptive Mode Switch (Pre-Season vs In-Season)
 in_season = active_players.agg(F.sum("minutes")).collect()[0][0] > 0
 
 if in_season:
@@ -128,12 +134,18 @@ z_df = evaluated_df \
     .withColumn("minutes_reliability_z", F.when(F.col("min_std") > 0, (F.col("effective_minutes") - F.col("min_mean")) / F.col("min_std")).otherwise(0.0))
 
 # COMMAND ----------
-# 7. Composite Value Score & Strategy Tier Classification
-# Value Score: 45% Form/PPG + 35% Fixture Ease + 20% Minutes Security
-# Set & Forget Anchors vs Rolling Targets
-value_scores = z_df.withColumn(
+# 7. Dual Scoring Engine: Quality Score (Best Players) & Value Score (Best ROI)
+# Quality Score = 65% Form/PPG + 20% Minutes Security + 15% Fixture Ease
+# Value Score = Quality / Price (£m)
+scored_df = z_df.withColumn(
+    "quality_score",
+    F.round((F.lit(0.65) * F.col("form_z")) + (F.lit(0.20) * F.col("minutes_reliability_z")) + (F.lit(0.15) * F.col("fixture_ease_z")), 2)
+).withColumn(
     "value_score",
-    F.round((F.lit(0.45) * F.col("form_z")) + (F.lit(0.35) * F.col("fixture_ease_z")) + (F.lit(0.20) * F.col("minutes_reliability_z")), 2)
+    F.round((F.col("quality_score") + F.lit(3.0)) / F.col("price_gbp"), 2) # Standardized positive ROI per £m
+).withColumn(
+    "position_quality_rank",
+    F.row_number().over(Window.partitionBy("position_name").orderBy(F.col("quality_score").desc()))
 ).withColumn(
     "position_value_rank",
     F.row_number().over(Window.partitionBy("position_name").orderBy(F.col("value_score").desc()))
@@ -164,12 +176,15 @@ value_scores = z_df.withColumn(
     "position_name",
     "price_gbp",
     "ownership_percent",
+    "position_quality_rank",
+    "quality_score",
     "position_value_rank",
     "value_score",
     "strategy_tier",
     "effective_form",
     "hist_ppg",
     "hist_minutes",
+    "hist_matches_played",
     "avg_upcoming_fdr",
     "fixture_ease_score",
     "effective_minutes",
@@ -182,11 +197,11 @@ value_scores = z_df.withColumn(
 
 # COMMAND ----------
 # 8. Save to fpl.gold.value_scores
-value_scores.write \
+scored_df.write \
     .mode("overwrite") \
     .option("overwriteSchema", "true") \
     .format("delta") \
     .saveAsTable(target_table)
 
-print(f"✅ Successfully created Gold Value Scores table: {target_table} ({value_scores.count()} rows)")
-display(value_scores.filter(F.col("position_value_rank") <= 5).orderBy("position_name", "position_value_rank"))
+print(f"✅ Successfully created Gold Value Scores table: {target_table} ({scored_df.count()} rows)")
+display(scored_df.filter(F.col("position_quality_rank") <= 5).orderBy("position_name", "position_quality_rank"))
