@@ -232,33 +232,26 @@ active_players = players.filter(F.coalesce(F.col("status"), F.lit("a")) != "u") 
 # COMMAND ----------
 # 5. Gradual Baseline Blend (Historical → Live Transition)
 #
-# WHY A GRADUAL BLEND:
-# After GW1, a player's live "form" is based on just 1 game — extremely noisy.
-# If Haaland blanks in GW1 (2 pts), a hard switch would drop him from Rank #1
-# to the bottom, even though he scored 240 pts last season. That's overreaction.
+# Instead of a hard switch, we gradually increase trust in live data:
 #
-# Instead, we gradually increase trust in live data as the sample grows:
+#   GW0 (Pre-Season):  100% Historical,   0% Live
+#   GW1–GW3:            80% Historical,  20% Live
+#   GW4–GW6:            60% Historical,  40% Live
+#   GW7–GW9:            40% Historical,  60% Live
+#   GW10+:               0% Historical, 100% Live
 #
-#   GW0 (Pre-Season):  100% Historical,   0% Live  → No live data exists
-#   GW1–GW3:            80% Historical,  20% Live  → Live sample tiny (1-3 games)
-#   GW4–GW6:            60% Historical,  40% Live  → Live data starting to stabilize
-#   GW7–GW9:            40% Historical,  60% Live  → Live form now meaningful
-#   GW10+:               0% Historical, 100% Live  → Fully trust this season
-#
-# IMPORTANT: The historical evidence columns (hist_ppg, hist_goals, hist_assists,
-# hist_total_points, etc.) are ALWAYS on every row regardless of blend weight.
-# They never disappear. Dashboards can always show "Last Season vs This Season".
+# IMPORTANT: Historical evidence columns (hist_ppg, hist_goals, etc.) are ALWAYS
+# on every row. They never disappear. Dashboards always show "Last Season vs This Season".
 
 finished_fixtures_count = fixtures.filter(F.col("finished") == True).count()
 
 if finished_fixtures_count == 0:
     current_gw = 0
 else:
-    # Determine the latest gameweek that has at least 1 finished fixture
     current_gw = fixtures.filter(F.col("finished") == True) \
         .agg(F.max("gameweek")).collect()[0][0]
 
-# Determine blend weights based on current gameweek
+# Determine blend weights
 if current_gw == 0:
     live_weight = 0.0
 elif current_gw <= 3:
@@ -273,14 +266,55 @@ else:
 hist_weight = round(1.0 - live_weight, 2)
 
 print(f"Current Gameweek: GW{current_gw}")
-print(f"Blend Weights: {int(hist_weight * 100)}% Historical + {int(live_weight * 100)}% Live Form")
+print(f"Blend Weights: {int(hist_weight * 100)}% Historical + {int(live_weight * 100)}% Live")
 
-# Compute the blended effective_form
-# For pre-season (live_weight=0): effective_form = hist_ppg (pure historical)
-# For GW10+ (live_weight=1): effective_form = form (pure live)
-# For GW1-9: a weighted blend of both
+# COMMAND ----------
+# 5b. Compute Blended Metrics for the Multi-Metric Composite
+#
+# THREE SCORING INPUTS (all gradually blended historical ↔ live):
+#
+#   1. effective_total_points:
+#      Pre-season = hist_total_points (e.g. Raya's 162 pts last season)
+#      In-season  = blend of hist_total_points and annualized current season points
+#      (annualized = current_pts × 38/current_gw, to project a full season equivalent)
+#
+#   2. position_metric (position-specific quality signal):
+#      GKP/DEF = Clean Sheet Rate (clean_sheets / matches_played)
+#      MID/FWD = xGI per 90 minutes (expected_goal_involvements / (minutes/90))
+#      Always uses historical data — represents the player's fundamental "DNA"
+#
+#   3. fixture_ease_score (already computed in Step 2)
+
+# Annualize current season total points for fair comparison with full-season historical
+annualization_factor = F.when(F.lit(current_gw) > 0, F.lit(38.0) / F.lit(current_gw)).otherwise(F.lit(1.0))
+
 evaluated_df = active_players \
     .withColumn(
+        "effective_total_points",
+        F.round(
+            (F.lit(hist_weight) * F.col("hist_total_points")) +
+            (F.lit(live_weight) * F.col("total_points") * annualization_factor),
+            1
+        )
+    ).withColumn(
+        # Position-specific metric: CS rate for GKP/DEF, xGI/90 for MID/FWD
+        "position_metric",
+        F.when(
+            F.col("position_name").isin("GKP", "DEF"),
+            F.when(F.col("hist_matches_played") > 0,
+                   F.round(F.col("hist_clean_sheets") / F.col("hist_matches_played"), 3))
+             .otherwise(0.0)
+        ).otherwise(
+            F.when(F.col("hist_minutes") > 0,
+                   F.round(F.col("hist_xgi") / (F.col("hist_minutes") / F.lit(90.0)), 3))
+             .otherwise(0.0)
+        )
+    ).withColumn(
+        "position_metric_label",
+        F.when(F.col("position_name").isin("GKP", "DEF"), F.lit("clean_sheet_rate"))
+         .otherwise(F.lit("xgi_per_90"))
+    ).withColumn(
+        # Keep effective_form (blended PPG) for display/reference, NOT for scoring
         "effective_form",
         F.round(
             (F.lit(hist_weight) * F.col("hist_ppg")) +
@@ -297,23 +331,23 @@ evaluated_df = active_players \
 # 6. Position-Normalized Z-Scores per Position Group (GKP, DEF, MID, FWD)
 #
 # WHY Z-SCORES:
-# A raw PPG of 5.0 means very different things for a Goalkeeper vs a Forward.
-# 5.0 PPG for a GKP is elite (top 1%), but 5.0 for a FWD is just above average.
-# Z-scores compare each player ONLY against others in the same position,
-# telling you "how many standard deviations above/below the position average is he?"
+# Raw numbers can't be compared across positions. 160 total points for a GKP is
+# elite, but 160 for a FWD is below average. Z-scores standardize each metric
+# within position groups so every player is measured against their position peers.
 #
 # Z = (player_value - position_average) / position_std_deviation
 #
-# A Z-score of +2.0 means the player is 2 standard deviations above his position peers.
-# A Z-score of  0.0 means the player is exactly average for his position.
-# A Z-score of -1.5 means the player is well below average for his position.
+# +2.0 = elite (top 2-3%)    0.0 = exactly average    -1.5 = well below average
 
 window_pos = Window.partitionBy("position_name")
 
 z_df = evaluated_df \
-    .withColumn("form_mean", F.avg("effective_form").over(window_pos)) \
-    .withColumn("form_std", F.stddev("effective_form").over(window_pos)) \
-    .withColumn("form_z", F.round(F.when(F.col("form_std") > 0, (F.col("effective_form") - F.col("form_mean")) / F.col("form_std")).otherwise(0.0), 2)) \
+    .withColumn("tp_mean", F.avg("effective_total_points").over(window_pos)) \
+    .withColumn("tp_std", F.stddev("effective_total_points").over(window_pos)) \
+    .withColumn("total_pts_z", F.round(F.when(F.col("tp_std") > 0, (F.col("effective_total_points") - F.col("tp_mean")) / F.col("tp_std")).otherwise(0.0), 2)) \
+    .withColumn("pm_mean", F.avg("position_metric").over(window_pos)) \
+    .withColumn("pm_std", F.stddev("position_metric").over(window_pos)) \
+    .withColumn("position_metric_z", F.round(F.when(F.col("pm_std") > 0, (F.col("position_metric") - F.col("pm_mean")) / F.col("pm_std")).otherwise(0.0), 2)) \
     .withColumn("ease_mean", F.avg("fixture_ease_score").over(window_pos)) \
     .withColumn("ease_std", F.stddev("fixture_ease_score").over(window_pos)) \
     .withColumn("fixture_ease_z", F.round(F.when(F.col("ease_std") > 0, (F.col("fixture_ease_score") - F.col("ease_mean")) / F.col("ease_std")).otherwise(0.0), 2)) \
@@ -322,20 +356,26 @@ z_df = evaluated_df \
     .withColumn("minutes_reliability_z", F.round(F.when(F.col("min_std") > 0, (F.col("effective_minutes") - F.col("min_mean")) / F.col("min_std")).otherwise(0.0), 2))
 
 # COMMAND ----------
-# 7. Dual Scoring Engine: Quality Score (Best Players) & Value Score (Best ROI)
+# 7. Position-Aware Multi-Metric Composite Scoring Engine
 #
 # QUALITY SCORE: "Who is the best player regardless of price?"
-#   = 85% Form/PPG (pure scoring power) + 15% Fixture Ease (schedule boost)
+#   = 50% Total Points Z (season volume — eliminates small-sample distortion)
+#   + 30% Position Metric Z (GKP/DEF: Clean Sheet Rate | MID/FWD: xGI per 90)
+#   + 20% Fixture Ease Z (upcoming schedule advantage)
 #   → Used for: Starting XI selection and Captaincy shortlisting
 #
 # VALUE SCORE: "Who gives the most points per million pounds spent?"
 #   = (Quality Score + 3.0) / Price in £m
-#   → The +3.0 shifts all quality scores into positive territory before dividing.
 #   → Used for: Finding budget enablers and bench picks that free up cash for stars.
 
 scored_df = z_df.withColumn(
     "quality_score",
-    F.round((F.lit(0.85) * F.col("form_z")) + (F.lit(0.15) * F.col("fixture_ease_z")), 2)
+    F.round(
+        (F.lit(0.50) * F.col("total_pts_z")) +
+        (F.lit(0.30) * F.col("position_metric_z")) +
+        (F.lit(0.20) * F.col("fixture_ease_z")),
+        2
+    )
 ).withColumn(
     "value_score",
     F.round((F.col("quality_score") + F.lit(3.0)) / F.col("price_gbp"), 2)
@@ -380,6 +420,9 @@ scored_df = z_df.withColumn(
     "strategy_tier",
     "baseline_source",
     "effective_form",
+    "effective_total_points",
+    "position_metric",
+    "position_metric_label",
     "hist_total_points",
     "hist_goals",
     "hist_assists",
@@ -391,7 +434,8 @@ scored_df = z_df.withColumn(
     "hist_avg_minutes_per_match",
     "avg_upcoming_fdr",
     "fixture_ease_score",
-    "form_z",
+    "total_pts_z",
+    "position_metric_z",
     "fixture_ease_z",
     "minutes_reliability_z",
     "is_penalty_taker",

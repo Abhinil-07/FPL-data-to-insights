@@ -54,41 +54,51 @@ The **Gold Layer** is the business presentation and decision-support tier of the
 
 #### B. Mathematical & Statistical Formulas
 
-##### 1. Upcoming 5-Gameweek Fixture Ease Score
+##### 1. Three-Tier Baseline Safety Net (`baseline_source`)
+* **Tier 1 (Primary):** Last completed season if player played $\ge 10$ matches.
+* **Tier 2 (Fallback):** Career Premier League average across all historical seasons for players with $< 10$ matches last season.
+* **Tier 3 (New Signing):** FPL's official `points_per_game` estimate for brand-new PL arrivals with zero archive history.
+
+##### 2. Upcoming 5-Gameweek Fixture Ease Score
 Extracts the next 5 upcoming matches chronologically per team and inverts the official 1–5 FDR:
 $$\text{avg\_upcoming\_fdr} = \frac{1}{5} \sum_{i=1}^{5} \text{FDR}_i$$
 $$\text{fixture\_ease\_score} = 5.0 - \text{avg\_upcoming\_fdr}$$
-*(Higher score = Easier schedule. e.g., FDR 2.0 yields Ease 3.0; FDR 4.2 yields Ease 0.8)*.
 
-##### 2. Position-Normalized Standardized Z-Scores
+##### 3. Gradual In-Season Baseline Blend (Transition Phase)
+$$\text{effective\_total\_points} = (w_{\text{hist}} \times \text{hist\_total\_points}) + (w_{\text{live}} \times \text{total\_points} \times \frac{38}{\text{current\_gw}})$$
+
+| Gameweek | Historical Weight ($w_{\text{hist}}$) | Live Form Weight ($w_{\text{live}}$) |
+|---|---|---|
+| GW0 (Pre-Season) | 100% | 0% |
+| GW1–GW3 | 80% | 20% |
+| GW4–GW6 | 60% | 40% |
+| GW7–GW9 | 40% | 60% |
+| GW10+ | 0% | 100% |
+
+##### 4. Position-Normalized Standardized Z-Scores
 Computed strictly within each position group $P \in \{\text{GKP}, \text{DEF}, \text{MID}, \text{FWD}\}$:
 
-$$Z_{\text{form}} = \frac{\text{Effective\_Form} - \mu_{\text{form}, P}}{\sigma_{\text{form}, P}}$$
+$$Z_{\text{total\_pts}} = \frac{\text{Effective\_Total\_Points} - \mu_{\text{pts}, P}}{\sigma_{\text{pts}, P}}$$
+
+$$Z_{\text{pos\_metric}} = \frac{\text{Position\_Metric} - \mu_{\text{pos}, P}}{\sigma_{\text{pos}, P}}$$
+
+$$\text{where Position\_Metric} = \begin{cases} \frac{\text{hist\_clean\_sheets}}{\text{hist\_matches\_played}} & \text{for GKP, DEF (Clean Sheet Rate)} \\ \frac{\text{hist\_xgi}}{\text{hist\_minutes} / 90} & \text{for MID, FWD (xGI per 90)} \end{cases}$$
 
 $$Z_{\text{ease}} = \frac{\text{Fixture\_Ease\_Score} - \mu_{\text{ease}, P}}{\sigma_{\text{ease}, P}}$$
 
-$$Z_{\text{min}} = \frac{\text{Effective\_Minutes} - \mu_{\text{min}, P}}{\sigma_{\text{min}, P}}$$
-
-* **Pre-Season Mode:** $\text{Effective\_Form} = \text{hist\_ppg}$ (True Points Per Appearance with $\text{minutes} > 0$ from the previous season); $\text{Effective\_Minutes} = \text{hist\_minutes}$.
-* **In-Season Mode:** $\text{Effective\_Form} = \text{form}$; $\text{Effective\_Minutes} = \text{minutes}$.
-
-##### 3. Quality Score (The Star Ranking)
-Weights pure point-scoring power with a sensible fixture modifier:
-$$\mathbf{\text{Quality Score}} = 0.85 \times Z_{\text{form}} + 0.15 \times Z_{\text{ease}}$$
+##### 5. Multi-Metric Composite Quality Score (The Star Ranking)
+Weights total season production volume ($50\%$), position-specific quality ($30\%$), and upcoming schedule ($20\%$):
+$$\mathbf{\text{Quality Score}} = 0.50 \times Z_{\text{total\_pts}} + 0.30 \times Z_{\text{pos\_metric}} + 0.20 \times Z_{\text{ease}}$$
 * **`position_quality_rank`:** $\text{ROW\_NUMBER() OVER (PARTITION BY position\_name ORDER BY quality\_score DESC)}$
 
-##### 4. Value Score (The Budget ROI Ranking)
-Measures standardized positive points/output generated per million pounds (£m) spent:
+##### 6. Value Score (The Budget ROI Ranking)
+Measures standardized positive output generated per million pounds (£m) spent:
 $$\mathbf{\text{Value Score}} = \frac{\text{Quality Score} + 3.0}{\text{Price (\pounds m)}}$$
 * **`position_value_rank`:** $\text{ROW\_NUMBER() OVER (PARTITION BY position\_name ORDER BY value\_score DESC)}$
 
-##### 5. 2-Tier Strategy Tier Classification Logic
+##### 7. Score-Driven Strategy Tier Classification
 ```python
-if position == "DEF" and (price_gbp >= 5.5 or ownership_percent >= 15.0):
-    strategy_tier = "🛡️ Season Anchor (Set & Forget)"
-elif position == "GKP" and (price_gbp >= 5.0 or ownership_percent >= 15.0):
-    strategy_tier = "🛡️ Season Anchor (Set & Forget)"
-elif position in ("MID", "FWD") and (price_gbp >= 9.0 or ownership_percent >= 25.0):
+if position_quality_rank <= 8:
     strategy_tier = "🛡️ Season Anchor (Set & Forget)"
 else:
     strategy_tier = "🔄 Rolling Transfer Target"
@@ -107,23 +117,29 @@ else:
 | `price_gbp` | `DOUBLE` | Current player cost in millions (e.g., `15.0`, `10.5`, `5.5`). |
 | `ownership_percent`| `DOUBLE` | Total FPL manager ownership percentage. |
 | `position_quality_rank` | `INT` | Rank #1, #2, #3... by pure output power within position. |
-| `quality_score` | `DOUBLE` | Position-normalized star rating ($0.85 \times Z_{\text{form}} + 0.15 \times Z_{\text{ease}}$). |
+| `quality_score` | `DOUBLE` | Multi-metric composite rating ($0.50 \times Z_{\text{total\_pts}} + 0.30 \times Z_{\text{pos\_metric}} + 0.20 \times Z_{\text{ease}}$). |
 | `position_value_rank` | `INT` | Rank #1, #2, #3... by budget efficiency ROI per £m. |
 | `value_score` | `DOUBLE` | Standardized points per million spent ($(\text{Quality} + 3.0) / \text{Price}$). |
-| `strategy_tier` | `STRING` | Tag: `🛡️ Season Anchor (Set & Forget)` vs `🔄 Rolling Transfer Target`. |
-| `effective_form` | `DOUBLE` | Active form value used in calculation (historical PPG or live form). |
-| `hist_total_points`| `INT` | Total points accumulated in the previous baseline season. |
-| `hist_goals` | `INT` | Total goals scored in the previous baseline season. |
-| `hist_assists` | `INT` | Total assists scored in the previous baseline season. |
-| `hist_clean_sheets`| `INT` | Total clean sheets kept in the previous baseline season. |
+| `strategy_tier` | `STRING` | Tag: `🛡️ Season Anchor (Set & Forget)` (Top 8) vs `🔄 Rolling Transfer Target`. |
+| `baseline_source` | `STRING` | Provenance: `"Last Season (Primary)"`, `"Career PL Average (Fallback)"`, `"FPL Official Estimate"`. |
+| `effective_form` | `DOUBLE` | Blended points per game for reference. |
+| `effective_total_points` | `DOUBLE` | Blended annualized season point volume driving $Z_{\text{total\_pts}}$. |
+| `position_metric` | `DOUBLE` | Raw position-specific quality metric (Clean sheet rate for GKP/DEF; xGI/90 for MID/FWD). |
+| `position_metric_label` | `STRING` | Identifies metric: `"clean_sheet_rate"` or `"xgi_per_90"`. |
+| `hist_total_points`| `INT` | Total points accumulated in baseline season. |
+| `hist_goals` | `INT` | Total goals scored in baseline season. |
+| `hist_assists` | `INT` | Total assists scored in baseline season. |
+| `hist_clean_sheets`| `INT` | Total clean sheets kept in baseline season. |
 | `hist_ppg` | `DOUBLE` | True Points Per Appearance when played ($\text{minutes} > 0$). |
 | `hist_xgi` | `DOUBLE` | Total Expected Goal Involvement ($xG + xA$) from baseline season. |
-| `hist_minutes` | `INT` | Total minutes played in the previous baseline season. |
+| `hist_minutes` | `INT` | Total minutes played in baseline season. |
 | `hist_matches_played` | `INT` | Count of matches with active minutes in baseline season. |
+| `hist_avg_minutes_per_match` | `DOUBLE` | Average minutes per appearance ($\text{minutes} / \text{matches}$). |
 | `avg_upcoming_fdr` | `DOUBLE` | Average FDR across the next 5 upcoming matches. |
 | `fixture_ease_score` | `DOUBLE` | Inverted FDR ease metric ($5.0 - \text{avg\_fdr}$). |
-| `form_z` | `DOUBLE` | Standardized Form/PPG Z-score relative to position peers. |
-| `fixture_ease_z` | `DOUBLE` | Standardized Fixture Ease Z-score relative to position peers. |
+| `total_pts_z` | `DOUBLE` | Standardized Total Points Z-score within position group. |
+| `position_metric_z` | `DOUBLE` | Standardized Position Quality Z-score within position group. |
+| `fixture_ease_z` | `DOUBLE` | Standardized Fixture Ease Z-score within position group. |
 | `minutes_reliability_z` | `DOUBLE` | Standardized Minutes Z-score relative to position peers. |
 | `is_penalty_taker` | `BOOLEAN` | `TRUE` if player is the #1 designated penalty taker. |
 | `is_set_piece_taker`| `BOOLEAN`| `TRUE` if player takes direct free-kicks or primary corners. |
