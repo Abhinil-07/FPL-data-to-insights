@@ -223,26 +223,68 @@ active_players = players.filter(F.coalesce(F.col("status"), F.lit("a")) != "u") 
     })
 
 # COMMAND ----------
-# 5. Adaptive Mode Switch (Pre-Season vs In-Season)
+# 5. Gradual Baseline Blend (Historical → Live Transition)
 #
-# HOW THIS WORKS:
-# Before any real match has been played, we have no live "form" data, so we use
-# historical PPG as the proxy for form. Once the season kicks off (at least 1
-# fixture marked finished), we switch to live rolling form from the FPL API.
+# WHY A GRADUAL BLEND:
+# After GW1, a player's live "form" is based on just 1 game — extremely noisy.
+# If Haaland blanks in GW1 (2 pts), a hard switch would drop him from Rank #1
+# to the bottom, even though he scored 240 pts last season. That's overreaction.
+#
+# Instead, we gradually increase trust in live data as the sample grows:
+#
+#   GW0 (Pre-Season):  100% Historical,   0% Live  → No live data exists
+#   GW1–GW3:            80% Historical,  20% Live  → Live sample tiny (1-3 games)
+#   GW4–GW6:            60% Historical,  40% Live  → Live data starting to stabilize
+#   GW7–GW9:            40% Historical,  60% Live  → Live form now meaningful
+#   GW10+:               0% Historical, 100% Live  → Fully trust this season
+#
+# IMPORTANT: The historical evidence columns (hist_ppg, hist_goals, hist_assists,
+# hist_total_points, etc.) are ALWAYS on every row regardless of blend weight.
+# They never disappear. Dashboards can always show "Last Season vs This Season".
 
 finished_fixtures_count = fixtures.filter(F.col("finished") == True).count()
-in_season = finished_fixtures_count > 0
 
-if in_season:
-    print(f"In-Season detected ({finished_fixtures_count} finished matches): Using live rolling form and current season minutes.")
-    evaluated_df = active_players \
-        .withColumn("effective_form", F.col("form")) \
-        .withColumn("effective_minutes", F.col("minutes"))
+if finished_fixtures_count == 0:
+    current_gw = 0
 else:
-    print("Pre-Season detected (0 finished matches): Using historical baseline PPG and historical minutes.")
-    evaluated_df = active_players \
-        .withColumn("effective_form", F.col("hist_ppg")) \
-        .withColumn("effective_minutes", F.col("hist_minutes"))
+    # Determine the latest gameweek that has at least 1 finished fixture
+    current_gw = fixtures.filter(F.col("finished") == True) \
+        .agg(F.max("gameweek")).collect()[0][0]
+
+# Determine blend weights based on current gameweek
+if current_gw == 0:
+    live_weight = 0.0
+elif current_gw <= 3:
+    live_weight = 0.20
+elif current_gw <= 6:
+    live_weight = 0.40
+elif current_gw <= 9:
+    live_weight = 0.60
+else:
+    live_weight = 1.0
+
+hist_weight = round(1.0 - live_weight, 2)
+
+print(f"Current Gameweek: GW{current_gw}")
+print(f"Blend Weights: {int(hist_weight * 100)}% Historical + {int(live_weight * 100)}% Live Form")
+
+# Compute the blended effective_form
+# For pre-season (live_weight=0): effective_form = hist_ppg (pure historical)
+# For GW10+ (live_weight=1): effective_form = form (pure live)
+# For GW1-9: a weighted blend of both
+evaluated_df = active_players \
+    .withColumn(
+        "effective_form",
+        F.round(
+            (F.lit(hist_weight) * F.col("hist_ppg")) +
+            (F.lit(live_weight) * F.col("form")),
+            2
+        )
+    ).withColumn(
+        "effective_minutes",
+        F.when(F.lit(current_gw) == 0, F.col("hist_minutes"))
+         .otherwise(F.col("minutes"))
+    )
 
 # COMMAND ----------
 # 6. Position-Normalized Z-Scores per Position Group (GKP, DEF, MID, FWD)
