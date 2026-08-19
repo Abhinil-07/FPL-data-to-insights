@@ -116,11 +116,12 @@ last_season_stats = player_gw_history.filter(
      F.round(F.sum("expected_goal_involvements"), 2).alias("last_szn_xgi")
  )
 
-# Tier 2: Career PL average across ALL historical seasons (for fallback)
+# Tier 2: Career PL average across ALL historical seasons (annualized to single-season scale)
 career_stats = player_gw_history.filter(
     (F.col("season") != current_season) & (F.col("minutes") > 0)
 ).groupBy("player_key") \
  .agg(
+     F.countDistinct("season").alias("career_seasons"),
      F.count("gameweek").alias("career_matches"),
      F.sum("minutes").alias("career_minutes"),
      F.sum("total_points").alias("career_total_points"),
@@ -131,6 +132,28 @@ career_stats = player_gw_history.filter(
      F.round(F.sum("expected_goals"), 2).alias("career_xg"),
      F.round(F.sum("expected_assists"), 2).alias("career_xa"),
      F.round(F.sum("expected_goal_involvements"), 2).alias("career_xgi")
+ ).withColumn(
+     # Annualize multi-year totals by dividing by active seasons (guarantees single-season scale)
+     "career_annual_matches",
+     F.when(F.col("career_seasons") > 0, F.round(F.col("career_matches") / F.col("career_seasons"))).otherwise(0)
+ ).withColumn(
+     "career_annual_minutes",
+     F.when(F.col("career_seasons") > 0, F.round(F.col("career_minutes") / F.col("career_seasons"))).otherwise(0)
+ ).withColumn(
+     "career_annual_total_points",
+     F.when(F.col("career_seasons") > 0, F.round(F.col("career_total_points") / F.col("career_seasons"))).otherwise(0)
+ ).withColumn(
+     "career_annual_goals",
+     F.when(F.col("career_seasons") > 0, F.round(F.col("career_goals") / F.col("career_seasons"))).otherwise(0)
+ ).withColumn(
+     "career_annual_assists",
+     F.when(F.col("career_seasons") > 0, F.round(F.col("career_assists") / F.col("career_seasons"))).otherwise(0)
+ ).withColumn(
+     "career_annual_clean_sheets",
+     F.when(F.col("career_seasons") > 0, F.round(F.col("career_clean_sheets") / F.col("career_seasons"))).otherwise(0)
+ ).withColumn(
+     "career_annual_xgi",
+     F.when(F.col("career_seasons") > 0, F.round(F.col("career_xgi") / F.col("career_seasons"), 2)).otherwise(0.0)
  )
 
 # Join both tiers to each player
@@ -138,7 +161,7 @@ hist_baseline = last_season_stats.join(career_stats, "player_key", "full")
 
 # Apply the safety-net selection logic:
 #   IF last_szn_matches >= 10 → use last season (strong recent sample)
-#   ELSE IF career_matches > 0 → use career average (fallback for injured/limited players)
+#   ELSE IF career_matches > 0 → use annualized career average (fallback for injured/limited players)
 #   ELSE → will fall through to Tier 3 (FPL official estimate) after join
 MIN_MATCHES_THRESHOLD = 10
 
@@ -154,31 +177,31 @@ hist_baseline = hist_baseline.withColumn(
 ).withColumn(
     "hist_minutes",
     F.when(F.col("last_szn_matches") >= MIN_MATCHES_THRESHOLD, F.col("last_szn_minutes"))
-     .otherwise(F.col("career_minutes"))
+     .otherwise(F.col("career_annual_minutes"))
 ).withColumn(
     "hist_matches_played",
     F.when(F.col("last_szn_matches") >= MIN_MATCHES_THRESHOLD, F.col("last_szn_matches"))
-     .otherwise(F.col("career_matches"))
+     .otherwise(F.col("career_annual_matches"))
 ).withColumn(
     "hist_total_points",
     F.when(F.col("last_szn_matches") >= MIN_MATCHES_THRESHOLD, F.col("last_szn_total_points"))
-     .otherwise(F.col("career_total_points"))
+     .otherwise(F.col("career_annual_total_points"))
 ).withColumn(
     "hist_goals",
     F.when(F.col("last_szn_matches") >= MIN_MATCHES_THRESHOLD, F.col("last_szn_goals"))
-     .otherwise(F.col("career_goals"))
+     .otherwise(F.col("career_annual_goals"))
 ).withColumn(
     "hist_assists",
     F.when(F.col("last_szn_matches") >= MIN_MATCHES_THRESHOLD, F.col("last_szn_assists"))
-     .otherwise(F.col("career_assists"))
+     .otherwise(F.col("career_annual_assists"))
 ).withColumn(
     "hist_clean_sheets",
     F.when(F.col("last_szn_matches") >= MIN_MATCHES_THRESHOLD, F.col("last_szn_clean_sheets"))
-     .otherwise(F.col("career_clean_sheets"))
+     .otherwise(F.col("career_annual_clean_sheets"))
 ).withColumn(
     "hist_xgi",
     F.when(F.col("last_szn_matches") >= MIN_MATCHES_THRESHOLD, F.col("last_szn_xgi"))
-     .otherwise(F.col("career_xgi"))
+     .otherwise(F.col("career_annual_xgi"))
 ).withColumn(
     "hist_avg_minutes_per_match",
     F.when(F.col("hist_matches_played") > 0,
@@ -271,19 +294,17 @@ print(f"Blend Weights: {int(hist_weight * 100)}% Historical + {int(live_weight *
 # COMMAND ----------
 # 5b. Compute Blended Metrics for the Multi-Metric Composite
 #
-# THREE SCORING INPUTS (all gradually blended historical ↔ live):
+# THREE VOLUME-DRIVEN INPUTS (avoids small-sample per-game rate blowups):
 #
 #   1. effective_total_points:
-#      Pre-season = hist_total_points (e.g. Raya's 162 pts last season)
+#      Pre-season = hist_total_points (e.g. Raya: 162 pts | Benitez: 7 pts)
 #      In-season  = blend of hist_total_points and annualized current season points
-#      (annualized = current_pts × 38/current_gw, to project a full season equivalent)
 #
-#   2. position_metric (position-specific quality signal):
-#      GKP/DEF = Clean Sheet Rate (clean_sheets / matches_played)
-#      MID/FWD = xGI per 90 minutes (expected_goal_involvements / (minutes/90))
-#      Always uses historical data — represents the player's fundamental "DNA"
+#   2. position_metric (Volume-based quality):
+#      GKP/DEF = Clean Sheets Volume (Raya: 19 CS | Benitez: 1 CS)
+#      MID/FWD = xGI Volume (Bruno: 22.5 xGI | Nyoni: 0.2 xGI)
 #
-#   3. fixture_ease_score (already computed in Step 2)
+#   3. fixture_ease_score (Upcoming 5-GW schedule advantage)
 
 # Annualize current season total points for fair comparison with full-season historical
 annualization_factor = F.when(F.lit(current_gw) > 0, F.lit(38.0) / F.lit(current_gw)).otherwise(F.lit(1.0))
@@ -297,24 +318,28 @@ evaluated_df = active_players \
             1
         )
     ).withColumn(
-        # Position-specific metric: CS rate for GKP/DEF, xGI/90 for MID/FWD
+        # Position-specific VOLUME metric: Clean sheets volume for GKP/DEF, xGI volume for MID/FWD
         "position_metric",
         F.when(
             F.col("position_name").isin("GKP", "DEF"),
-            F.when(F.col("hist_matches_played") > 0,
-                   F.round(F.col("hist_clean_sheets") / F.col("hist_matches_played"), 3))
-             .otherwise(0.0)
+            F.round(
+                (F.lit(hist_weight) * F.col("hist_clean_sheets")) +
+                (F.lit(live_weight) * F.col("clean_sheets") * annualization_factor),
+                1
+            )
         ).otherwise(
-            F.when(F.col("hist_minutes") > 0,
-                   F.round(F.col("hist_xgi") / (F.col("hist_minutes") / F.lit(90.0)), 3))
-             .otherwise(0.0)
+            F.round(
+                (F.lit(hist_weight) * F.col("hist_xgi")) +
+                (F.lit(live_weight) * F.col("expected_goal_involvements") * annualization_factor),
+                2
+            )
         )
     ).withColumn(
         "position_metric_label",
-        F.when(F.col("position_name").isin("GKP", "DEF"), F.lit("clean_sheet_rate"))
-         .otherwise(F.lit("xgi_per_90"))
+        F.when(F.col("position_name").isin("GKP", "DEF"), F.lit("clean_sheets_vol"))
+         .otherwise(F.lit("xgi_vol"))
     ).withColumn(
-        # Keep effective_form (blended PPG) for display/reference, NOT for scoring
+        # Keep effective_form (blended PPG) for display/reference
         "effective_form",
         F.round(
             (F.lit(hist_weight) * F.col("hist_ppg")) +
@@ -329,15 +354,6 @@ evaluated_df = active_players \
 
 # COMMAND ----------
 # 6. Position-Normalized Z-Scores per Position Group (GKP, DEF, MID, FWD)
-#
-# WHY Z-SCORES:
-# Raw numbers can't be compared across positions. 160 total points for a GKP is
-# elite, but 160 for a FWD is below average. Z-scores standardize each metric
-# within position groups so every player is measured against their position peers.
-#
-# Z = (player_value - position_average) / position_std_deviation
-#
-# +2.0 = elite (top 2-3%)    0.0 = exactly average    -1.5 = well below average
 
 window_pos = Window.partitionBy("position_name")
 
@@ -357,16 +373,6 @@ z_df = evaluated_df \
 
 # COMMAND ----------
 # 7. Position-Aware Multi-Metric Composite Scoring Engine
-#
-# QUALITY SCORE: "Who is the best player regardless of price?"
-#   = 50% Total Points Z (season volume — eliminates small-sample distortion)
-#   + 30% Position Metric Z (GKP/DEF: Clean Sheet Rate | MID/FWD: xGI per 90)
-#   + 20% Fixture Ease Z (upcoming schedule advantage)
-#   → Used for: Starting XI selection and Captaincy shortlisting
-#
-# VALUE SCORE: "Who gives the most points per million pounds spent?"
-#   = (Quality Score + 3.0) / Price in £m
-#   → Used for: Finding budget enablers and bench picks that free up cash for stars.
 
 scored_df = z_df.withColumn(
     "quality_score",
@@ -386,17 +392,25 @@ scored_df = z_df.withColumn(
     "position_value_rank",
     F.row_number().over(Window.partitionBy("position_name").orderBy(F.col("value_score").desc()))
 ).withColumn(
-    # STRATEGY TIER: Driven by our own quality_score ranking, NOT arbitrary price tags.
-    # Top 8 players per position = Season Anchors (the core you never sell).
-    # Everyone else = Rolling Targets (rotate based on fixture swings).
-    #
-    # WHY 8? In a 15-man FPL squad (~2 GKP, 5 DEF, 5 MID, 3 FWD), the top 8 per
-    # position covers the realistic pool that competitive managers choose from.
-    # Anyone outside that tier is a fixture-dependent rotation pick.
+    # STRATEGY TIER: Rigorous multi-factor classification
+    # 1. 🛡️ Season Anchor: Top 8 quality + proven starter (>=10 games, >=60 mins/match) + premium/core price
+    # 2. 💰 Budget Enabler: Top 15 value rank + budget price (<=5.5) + proven regular starter (>=60 mins/match)
+    # 3. 🔄 Rolling Target: All other players
     "strategy_tier",
     F.when(
-        F.col("position_quality_rank") <= 8,
+        (F.col("position_quality_rank") <= 8) & 
+        (F.col("hist_matches_played") >= 10) & 
+        (F.col("hist_avg_minutes_per_match") >= 60.0) & (
+            ((F.col("position_name") == "GKP") & (F.col("price_gbp") >= 5.0)) |
+            ((F.col("position_name") == "DEF") & (F.col("price_gbp") >= 5.5)) |
+            ((F.col("position_name").isin("MID", "FWD")) & (F.col("price_gbp") >= 7.0))
+        ),
         "🛡️ Season Anchor (Set & Forget)"
+    ).when(
+        (F.col("position_value_rank") <= 15) &
+        (F.col("price_gbp") <= 5.5) &
+        (F.col("hist_avg_minutes_per_match") >= 60.0),
+        "💰 Budget Enabler (Value Pick)"
     ).otherwise("🔄 Rolling Transfer Target")
 ).withColumn(
     "is_penalty_taker",
