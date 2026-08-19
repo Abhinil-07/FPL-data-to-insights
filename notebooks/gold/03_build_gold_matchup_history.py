@@ -163,11 +163,15 @@ player_meta = players.select(
     "team_short_name",
     "position_name",
     "price_gbp"
+).withColumn(
+    "player_display_name",
+    F.concat(F.col("web_name"), F.lit(" ("), F.col("team_short_name"), F.lit(" - "), F.col("position_name"), F.lit(")"))
 )
 
 final_matchup_history = enriched_matchups.join(player_meta, "player_key", "inner").select(
     "player_key",
     "web_name",
+    "player_display_name",
     "team_name",
     "team_short_name",
     "position_name",

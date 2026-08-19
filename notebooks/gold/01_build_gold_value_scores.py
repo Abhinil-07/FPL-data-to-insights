@@ -418,10 +418,14 @@ scored_df = z_df.withColumn(
 ).withColumn(
     "is_set_piece_taker",
     F.when((F.col("corners_and_indirect_freekicks_order") == 1) | (F.col("direct_freekicks_order") == 1), True).otherwise(False)
+).withColumn(
+    "player_display_name",
+    F.concat(F.col("web_name"), F.lit(" ("), F.col("team_short_name"), F.lit(" - "), F.col("position_name"), F.lit(")"))
 ).select(
     "player_key",
     "player_id",
     "web_name",
+    "player_display_name",
     "team_name",
     "team_short_name",
     "position_name",
