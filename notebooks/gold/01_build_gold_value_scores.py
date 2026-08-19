@@ -179,11 +179,17 @@ hist_baseline = hist_baseline.withColumn(
     "hist_xgi",
     F.when(F.col("last_szn_matches") >= MIN_MATCHES_THRESHOLD, F.col("last_szn_xgi"))
      .otherwise(F.col("career_xgi"))
+).withColumn(
+    "hist_avg_minutes_per_match",
+    F.when(F.col("hist_matches_played") > 0,
+           F.round(F.col("hist_minutes") / F.col("hist_matches_played"), 1))
+     .otherwise(0.0)
 ).select(
     "player_key",
     "hist_ppg",
     "hist_minutes",
     "hist_matches_played",
+    "hist_avg_minutes_per_match",
     "hist_total_points",
     "hist_goals",
     "hist_assists",
@@ -215,6 +221,7 @@ active_players = players.filter(F.coalesce(F.col("status"), F.lit("a")) != "u") 
         "hist_ppg": 0.0,
         "hist_minutes": 0,
         "hist_matches_played": 0,
+        "hist_avg_minutes_per_match": 0.0,
         "hist_total_points": 0,
         "hist_goals": 0,
         "hist_assists": 0,
@@ -381,6 +388,7 @@ scored_df = z_df.withColumn(
     "hist_xgi",
     "hist_minutes",
     "hist_matches_played",
+    "hist_avg_minutes_per_match",
     "avg_upcoming_fdr",
     "fixture_ease_score",
     "form_z",
